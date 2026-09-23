@@ -31,7 +31,8 @@
     "tailwindcss-animate": "^1.0.7",
     "lucide-react": "^0.427.0",
     "date-fns": "^3.6.0",
-    "zod": "^3.23.0"
+    "zod": "^3.23.0",
+    "mongodb": "^6.3.0"
   },
   "devDependencies": {
     "typescript": "^5.5.0",

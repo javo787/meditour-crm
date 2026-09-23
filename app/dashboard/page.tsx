@@ -1,8 +1,10 @@
 import { getLeadsByStage } from "@/lib/db";
 import { KanbanBoard } from "@/components/leads/kanban-board";
 
-export default function DashboardPage() {
-  const columns = getLeadsByStage();
+export const dynamic = "force-dynamic";
+
+export default async function DashboardPage() {
+  const columns = await getLeadsByStage();
 
   return (
     <div className="flex h-full flex-col p-5">

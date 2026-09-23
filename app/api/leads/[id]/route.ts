@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { addMessage, getLead, updateLead } from "@/lib/db";
 
+export const dynamic = "force-dynamic";
+
 const patchSchema = z.object({
   stage: z
     .enum(["new", "data_collection", "waiting_india", "plan_sent", "declined", "won"])
@@ -13,7 +15,7 @@ export async function GET(
   _request: Request,
   { params }: { params: { id: string } }
 ) {
-  const lead = getLead(params.id);
+  const lead = await getLead(params.id);
   if (!lead) {
     return NextResponse.json({ error: "Лид не найден" }, { status: 404 });
   }
@@ -30,13 +32,13 @@ export async function PATCH(
     return NextResponse.json({ error: "Некорректные данные" }, { status: 400 });
   }
 
-  const lead = updateLead(params.id, parsed.data);
+  const lead = await updateLead(params.id, parsed.data);
   if (!lead) {
     return NextResponse.json({ error: "Лид не найден" }, { status: 404 });
   }
 
   if (parsed.data.aiPaused !== undefined) {
-    addMessage(
+    await addMessage(
       params.id,
       "coordinator",
       parsed.data.aiPaused

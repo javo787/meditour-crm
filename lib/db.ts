@@ -1,36 +1,97 @@
-import { seedLeads, seedMessages } from "@/lib/mock-data";
-import type { ChatMessage, Lead, Stage } from "@/lib/types";
+import { ObjectId, type Collection } from "mongodb";
 
-// Простое in-memory «хранилище» для демонстрации интерфейса Этапа 2.
-// Данные живут в памяти процесса Node и сбрасываются при перезапуске
-// сервера. На Этапе 1/3 этот модуль заменяется запросами к MongoDB Atlas
-// (коллекции Leads и Messages из плана).
+import { getDb } from "@/lib/mongodb";
+import type { ChatMessage, Lead, MessageSender, Stage } from "@/lib/types";
 
-const leads: Lead[] = seedLeads.map((l) => ({ ...l }));
-const messages: ChatMessage[] = seedMessages.map((m) => ({ ...m }));
+// Слой данных поверх MongoDB Atlas (коллекции Leads и Messages из Этапа 1
+// плана). Раньше (Этап 2) здесь был массив в памяти процесса — сигнатуры
+// функций намеренно не поменялись, только стали асинхронными, поэтому весь
+// интерфейс из Этапа 2 (канбан, таблица, карточка пациента) продолжает
+// работать без изменений, просто теперь читает и пишет в реальную базу.
 
-export function getLeads(filter?: { q?: string; stage?: Stage | "all" }): Lead[] {
-  let result = leads;
-  if (filter?.stage && filter.stage !== "all") {
-    result = result.filter((l) => l.stage === filter.stage);
-  }
-  if (filter?.q) {
-    const q = filter.q.trim().toLowerCase();
-    if (q) {
-      result = result.filter(
-        (l) =>
-          l.name.toLowerCase().includes(q) ||
-          l.phone.toLowerCase().includes(q) ||
-          l.diagnosis.toLowerCase().includes(q)
-      );
-    }
-  }
-  return [...result].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-  );
+interface LeadDoc {
+  _id: ObjectId;
+  name: string;
+  phone: string;
+  diagnosis: string;
+  stage: Stage;
+  assignee: string;
+  nextTouch: string;
+  createdAt: string;
+  hospital?: string;
+  aiPaused: boolean;
+  anamnesis?: Lead["anamnesis"];
 }
 
-export function getLeadsByStage(): Record<Stage, Lead[]> {
+interface MessageDoc {
+  _id: ObjectId;
+  leadId: ObjectId;
+  from: MessageSender;
+  text: string;
+  at: string;
+}
+
+async function leadsCollection(): Promise<Collection<LeadDoc>> {
+  const db = await getDb();
+  return db.collection<LeadDoc>("Leads");
+}
+
+async function messagesCollection(): Promise<Collection<MessageDoc>> {
+  const db = await getDb();
+  return db.collection<MessageDoc>("Messages");
+}
+
+function toLead(doc: LeadDoc): Lead {
+  return {
+    id: doc._id.toString(),
+    name: doc.name,
+    phone: doc.phone,
+    diagnosis: doc.diagnosis,
+    stage: doc.stage,
+    assignee: doc.assignee,
+    nextTouch: doc.nextTouch,
+    createdAt: doc.createdAt,
+    hospital: doc.hospital,
+    aiPaused: doc.aiPaused,
+    anamnesis: doc.anamnesis,
+  };
+}
+
+function toMessage(doc: MessageDoc): ChatMessage {
+  return {
+    id: doc._id.toString(),
+    leadId: doc.leadId.toString(),
+    from: doc.from,
+    text: doc.text,
+    at: doc.at,
+  };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export async function getLeads(filter?: {
+  q?: string;
+  stage?: Stage | "all";
+}): Promise<Lead[]> {
+  const col = await leadsCollection();
+  const mongoFilter: Record<string, unknown> = {};
+
+  if (filter?.stage && filter.stage !== "all") {
+    mongoFilter.stage = filter.stage;
+  }
+  if (filter?.q?.trim()) {
+    const re = new RegExp(escapeRegExp(filter.q.trim()), "i");
+    mongoFilter.$or = [{ name: re }, { phone: re }, { diagnosis: re }];
+  }
+
+  const docs = await col.find(mongoFilter).sort({ createdAt: -1 }).toArray();
+  return docs.map(toLead);
+}
+
+export async function getLeadsByStage(): Promise<Record<Stage, Lead[]>> {
+  const leads = await getLeads();
   const grouped: Record<Stage, Lead[]> = {
     new: [],
     data_collection: [],
@@ -43,38 +104,78 @@ export function getLeadsByStage(): Record<Stage, Lead[]> {
   return grouped;
 }
 
-export function getLead(id: string): Lead | undefined {
-  return leads.find((l) => l.id === id);
+export async function getLead(id: string): Promise<Lead | undefined> {
+  if (!ObjectId.isValid(id)) return undefined;
+  const col = await leadsCollection();
+  const doc = await col.findOne({ _id: new ObjectId(id) });
+  return doc ? toLead(doc) : undefined;
 }
 
-export function updateLead(
+export async function findLeadByPhone(phone: string): Promise<Lead | undefined> {
+  const col = await leadsCollection();
+  const doc = await col.findOne({ phone });
+  return doc ? toLead(doc) : undefined;
+}
+
+export async function createLead(input: {
+  name: string;
+  phone: string;
+  diagnosis?: string;
+  stage?: Stage;
+  assignee?: string;
+}): Promise<Lead> {
+  const col = await leadsCollection();
+  const now = new Date().toISOString();
+  const doc = {
+    name: input.name,
+    phone: input.phone,
+    diagnosis: input.diagnosis ?? "Уточняется в переписке",
+    stage: input.stage ?? "new",
+    assignee: input.assignee ?? "Не назначен",
+    nextTouch: now,
+    createdAt: now,
+    aiPaused: false,
+  } satisfies Omit<LeadDoc, "_id">;
+
+  const result = await col.insertOne(doc as LeadDoc);
+  return toLead({ _id: result.insertedId, ...doc });
+}
+
+export async function updateLead(
   id: string,
   patch: Partial<Pick<Lead, "stage" | "aiPaused" | "nextTouch" | "assignee">>
-): Lead | undefined {
-  const lead = leads.find((l) => l.id === id);
-  if (!lead) return undefined;
-  Object.assign(lead, patch);
-  return lead;
+): Promise<Lead | undefined> {
+  if (!ObjectId.isValid(id)) return undefined;
+  const col = await leadsCollection();
+  const _id = new ObjectId(id);
+  await col.updateOne({ _id }, { $set: patch });
+  const doc = await col.findOne({ _id });
+  return doc ? toLead(doc) : undefined;
 }
 
-export function getMessages(leadId: string): ChatMessage[] {
-  return messages
-    .filter((m) => m.leadId === leadId)
-    .sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+export async function getMessages(leadId: string): Promise<ChatMessage[]> {
+  if (!ObjectId.isValid(leadId)) return [];
+  const col = await messagesCollection();
+  const docs = await col
+    .find({ leadId: new ObjectId(leadId) })
+    .sort({ at: 1 })
+    .toArray();
+  return docs.map(toMessage);
 }
 
-export function addMessage(
+export async function addMessage(
   leadId: string,
-  from: ChatMessage["from"],
+  from: MessageSender,
   text: string
-): ChatMessage {
-  const msg: ChatMessage = {
-    id: `msg-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    leadId,
+): Promise<ChatMessage> {
+  const col = await messagesCollection();
+  const doc = {
+    leadId: new ObjectId(leadId),
     from,
     text,
     at: new Date().toISOString(),
-  };
-  messages.push(msg);
-  return msg;
+  } satisfies Omit<MessageDoc, "_id">;
+
+  const result = await col.insertOne(doc as MessageDoc);
+  return toMessage({ _id: result.insertedId, ...doc });
 }

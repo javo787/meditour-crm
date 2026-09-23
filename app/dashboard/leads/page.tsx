@@ -3,13 +3,13 @@ import { LeadsFilters } from "@/components/leads/leads-filters";
 import { LeadsTable } from "@/components/leads/leads-table";
 import type { Stage } from "@/lib/types";
 
-export default function LeadsPage({
+export default async function LeadsPage({
   searchParams,
 }: {
   searchParams: { q?: string; stage?: string };
 }) {
   const stage = (searchParams.stage as Stage | "all" | undefined) ?? "all";
-  const leads = getLeads({ q: searchParams.q, stage });
+  const leads = await getLeads({ q: searchParams.q, stage });
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-hidden p-5">

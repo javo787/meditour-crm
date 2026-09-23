@@ -8,10 +8,10 @@ import { ChatPanel } from "@/components/leads/patient-card/chat-panel";
 import { GeneratePanel } from "@/components/leads/patient-card/generate-panel";
 import { StagePanel } from "@/components/leads/patient-card/stage-panel";
 
-export default function LeadDetailPage({ params }: { params: { id: string } }) {
-  const lead = getLead(params.id);
+export default async function LeadDetailPage({ params }: { params: { id: string } }) {
+  const lead = await getLead(params.id);
   if (!lead) notFound();
-  const messages = getMessages(params.id);
+  const messages = await getMessages(params.id);
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto p-5">

@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { getLead } from "@/lib/db";
 
+export const dynamic = "force-dynamic";
+
 // Заглушка вместо вызова Gemini 1.5 Flash (Этап 4 плана). Формирует
 // англоязычный Medical Opinion Request по данным карточки лида, чтобы
 // интерфейс Этапа 2 можно было проверить целиком уже сейчас.
@@ -8,7 +10,7 @@ export async function POST(
   _request: Request,
   { params }: { params: { id: string } }
 ) {
-  const lead = getLead(params.id);
+  const lead = await getLead(params.id);
   if (!lead) {
     return NextResponse.json({ error: "Лид не найден" }, { status: 404 });
   }
