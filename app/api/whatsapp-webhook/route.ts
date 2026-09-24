@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { addMessage, createLead, findLeadByPhone, getMessages, updateLead } from "@/lib/db";
+import { addMessage, createLead, findLeadByPhone, getLead, getMessages, updateLead } from "@/lib/db";
 import { fetchMediaBase64, sendWhatsAppText } from "@/lib/evolution";
 import { askGemini } from "@/lib/gemini";
 import { createLogger, newRequestId } from "@/lib/logger";
@@ -8,6 +8,15 @@ import { createLogger, newRequestId } from "@/lib/logger";
 export const dynamic = "force-dynamic";
 
 const baseLog = createLogger("webhook");
+
+// Buffer for grouping incoming messages by leadId
+const BATCH_DEBOUNCE_MS = 8000;
+// NOTE: module-level state works here because the service runs with WEB_CONCURRENCY=1 (a single Node process).
+// If scaled to multiple instances, this needs to be moved to a shared store (e.g., Redis).
+const pendingBatches = new Map<string, {
+  items: Array<{ text: string; image?: { base64: string; mimeType: string } }>;
+  timer: NodeJS.Timeout;
+}>();
 
 // Приём вебхуков от Evolution API (Этап 3 плана).
 // Формат payload подтверждён по документации/issue-трекеру Evolution API v2:
@@ -163,43 +172,80 @@ export async function POST(request: Request) {
     log.info("10. ИИ на паузе для этого лида (aiPaused) — ответ не генерируем", { leadId: lead.id });
     return NextResponse.json({ ok: true, skipped: "ai-paused" });
   }
-  log.info("10. ИИ активен для этого лида — переходим к генерации ответа");
+  log.info("10. ИИ активен для этого лида — буферизуем сообщение");
+
+  let batch = pendingBatches.get(lead.id);
+  if (batch) {
+    clearTimeout(batch.timer);
+  } else {
+    batch = { items: [], timer: setTimeout(() => {}, 0) };
+    pendingBatches.set(lead.id, batch);
+  }
+
+  batch.items.push({ text, image });
+  batch.timer = setTimeout(() => processBatch(lead.id, phone), BATCH_DEBOUNCE_MS);
+
+  log.info("11. сообщение добавлено в буфер, таймер обновлен", { leadId: lead.id, itemsCount: batch.items.length });
+  return NextResponse.json({ ok: true, buffered: true });
+}
+
+async function processBatch(leadId: string, phone: string) {
+  const requestId = newRequestId();
+  const log = baseLog.child(requestId);
+
+  const batch = pendingBatches.get(leadId);
+  if (!batch) return;
+
+  pendingBatches.delete(leadId);
+  const items = batch.items;
+
+  log.info("processBatch: старт обработки пачки сообщений", { leadId, itemsCount: items.length });
+
+  const lead = await getLead(leadId);
+  if (!lead) {
+    log.error("processBatch: лид не найден", { leadId });
+    return;
+  }
+
+  if (lead.aiPaused) {
+    log.info("processBatch: ИИ на паузе (aiPaused) — ответ не генерируем, оставляем в истории", { leadId });
+    return;
+  }
 
   try {
-    const history = await getMessages(lead.id);
-    log.info("11. история переписки загружена для контекста Gemini", {
-      leadId: lead.id,
+    const history = await getMessages(leadId);
+    // Remove the latest `items.length` messages from the context sent to Gemini,
+    // because those are the buffered ones we are passing explicitly in `items` with full image data.
+    const olderHistory = items.length > 0 ? history.slice(0, -items.length) : history;
+    log.info("processBatch: история переписки загружена для контекста Gemini", {
+      leadId,
       totalMessages: history.length,
+      olderHistoryMessages: olderHistory.length,
     });
 
     const reply = await askGemini({
-      history: history.slice(0, -1), // без только что добавленного сообщения пациента
-      userText: text,
-      image,
+      history: olderHistory,
+      items,
       requestId,
     });
-    log.info("12. Gemini вернул ответ", { leadId: lead.id, replyLength: reply.length });
+    log.info("processBatch: Gemini вернул ответ", { leadId, replyLength: reply.length });
 
-    await addMessage(lead.id, "ai", reply);
-    log.info("13. ответ ИИ сохранён в историю", { leadId: lead.id });
+    await addMessage(leadId, "ai", reply);
+    log.info("processBatch: ответ ИИ сохранён в историю", { leadId });
 
     await sendWhatsAppText(phone, reply, requestId);
-    log.info("14. ответ отправлен пациенту через Evolution API", { phone });
+    log.info("processBatch: ответ отправлен пациенту через Evolution API", { phone });
 
     if (lead.stage === "new") {
-      await updateLead(lead.id, { stage: "first_contact" });
-      log.info("15. статус лида обновлён new → first_contact", { leadId: lead.id });
+      await updateLead(leadId, { stage: "first_contact" });
+      log.info("processBatch: статус лида обновлён new → first_contact", { leadId });
     }
   } catch (err) {
-    // Сообщение пациента уже сохранено — координатор увидит его в карточке
-    // и сможет ответить вручную, даже если ИИ или Evolution временно недоступны.
-    log.error("Ошибка при обращении к ИИ или отправке ответа в WhatsApp — сообщение пациента сохранено, координатор сможет ответить вручную", {
-      leadId: lead.id,
+    // Messages are already safely in history either way, so a failure here should log and stop.
+    log.error("Ошибка при обращении к ИИ или отправке ответа в WhatsApp — сообщения пациента сохранены, координатор сможет ответить вручную", {
+      leadId,
       message: err instanceof Error ? err.message : String(err),
       stack: err instanceof Error ? err.stack : undefined,
     });
   }
-
-  log.info("16. обработка вебхука завершена");
-  return NextResponse.json({ ok: true });
 }

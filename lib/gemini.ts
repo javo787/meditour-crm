@@ -72,8 +72,7 @@ async function callModel(
 
 export async function askGemini(params: {
   history: ChatMessage[];
-  userText: string;
-  image?: { base64: string; mimeType: string };
+  items: Array<{ text: string; image?: { base64: string; mimeType: string } }>;
   requestId?: string;
 }): Promise<string> {
   const logger = params.requestId ? log.child(params.requestId) : log;
@@ -88,21 +87,37 @@ export async function askGemini(params: {
     parts: [{ text: m.text }] as GeminiPart[],
   }));
 
-  const newParts: GeminiPart[] = [
-    { text: params.userText || "(сообщение пришло без текста)" },
-  ];
-  if (params.image) {
-    newParts.push({
-      inlineData: { mimeType: params.image.mimeType, data: params.image.base64 },
-    });
+  const newParts: GeminiPart[] = [];
+  let totalTextLength = 0;
+  let imageCount = 0;
+  let hasTextInBatch = false;
+
+  for (const item of params.items) {
+    if (item.text) {
+      newParts.push({ text: item.text });
+      totalTextLength += item.text.length;
+      hasTextInBatch = true;
+    }
+    if (item.image) {
+      newParts.push({
+        inlineData: { mimeType: item.image.mimeType, data: item.image.base64 },
+      });
+      imageCount++;
+    }
   }
+
+  if (!hasTextInBatch) {
+    newParts.push({ text: "(сообщение пришло без текста)" });
+  }
+
   contents.push({ role: "user", parts: newParts });
 
   logger.info("askGemini: отправка запроса", {
     models: MODELS,
     historyMessages: params.history.length,
-    hasImage: Boolean(params.image),
-    userTextLength: params.userText.length,
+    itemCount: params.items.length,
+    imageCount,
+    totalTextLength,
   });
 
   let lastStatus = 0;
