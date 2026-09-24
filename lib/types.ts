@@ -1,10 +1,15 @@
+// Пайплайн синхронизирован с реальной таблицей координатора
+// (Meditur-Учёт_лидов.xlsx, лист «Дашборд» → «По статусу») — это его
+// фактический процесс на сегодня, более подробный, чем в исходном плане.
 export type Stage =
   | "new"
-  | "data_collection"
-  | "waiting_india"
-  | "plan_sent"
-  | "declined"
-  | "won";
+  | "first_contact"
+  | "consult_scheduled"
+  | "consult_done"
+  | "estimate_sent"
+  | "awaiting_decision"
+  | "won"
+  | "declined";
 
 export interface Anamnesis {
   age?: number;
@@ -24,6 +29,12 @@ export interface Lead {
   hospital?: string;
   aiPaused: boolean;
   anamnesis?: Anamnesis;
+  // Поля из реальной таблицы координатора — отсутствовали в моке Этапа 2.
+  source?: string; // Источник: WhatsApp, Instagram Direct, Комментарий к посту, ...
+  campaign?: string; // Пост/реклама (тема) — привязка к контент-плану
+  homeLocation?: string; // Город, страна проживания пациента
+  declinedReason?: string; // Причина отказа
+  notes?: string; // Свободные заметки координатора (не переписка с ИИ)
 }
 
 export type MessageSender = "patient" | "ai" | "coordinator";

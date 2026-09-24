@@ -18,7 +18,7 @@ import {
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("coordinator@meditour.local");
+  const [email, setEmail] = useState("coordinator@meditur.local");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -44,7 +44,7 @@ export default function LoginPage() {
           <div className="mb-1 flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
             <Stethoscope className="h-5 w-5 text-primary" />
           </div>
-          <CardTitle>Meditour CRM</CardTitle>
+          <CardTitle>Meditur CRM</CardTitle>
           <CardDescription>Вход для координаторов</CardDescription>
         </CardHeader>
         <CardContent>

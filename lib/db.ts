@@ -21,6 +21,11 @@ interface LeadDoc {
   hospital?: string;
   aiPaused: boolean;
   anamnesis?: Lead["anamnesis"];
+  source?: string;
+  campaign?: string;
+  homeLocation?: string;
+  declinedReason?: string;
+  notes?: string;
 }
 
 interface MessageDoc {
@@ -54,6 +59,11 @@ function toLead(doc: LeadDoc): Lead {
     hospital: doc.hospital,
     aiPaused: doc.aiPaused,
     anamnesis: doc.anamnesis,
+    source: doc.source,
+    campaign: doc.campaign,
+    homeLocation: doc.homeLocation,
+    declinedReason: doc.declinedReason,
+    notes: doc.notes,
   };
 }
 
@@ -83,7 +93,12 @@ export async function getLeads(filter?: {
   }
   if (filter?.q?.trim()) {
     const re = new RegExp(escapeRegExp(filter.q.trim()), "i");
-    mongoFilter.$or = [{ name: re }, { phone: re }, { diagnosis: re }];
+    mongoFilter.$or = [
+      { name: re },
+      { phone: re },
+      { diagnosis: re },
+      { homeLocation: re },
+    ];
   }
 
   const docs = await col.find(mongoFilter).sort({ createdAt: -1 }).toArray();
@@ -94,11 +109,13 @@ export async function getLeadsByStage(): Promise<Record<Stage, Lead[]>> {
   const leads = await getLeads();
   const grouped: Record<Stage, Lead[]> = {
     new: [],
-    data_collection: [],
-    waiting_india: [],
-    plan_sent: [],
-    declined: [],
+    first_contact: [],
+    consult_scheduled: [],
+    consult_done: [],
+    estimate_sent: [],
+    awaiting_decision: [],
     won: [],
+    declined: [],
   };
   for (const lead of leads) grouped[lead.stage].push(lead);
   return grouped;
@@ -123,6 +140,13 @@ export async function createLead(input: {
   diagnosis?: string;
   stage?: Stage;
   assignee?: string;
+  source?: string;
+  campaign?: string;
+  homeLocation?: string;
+  createdAt?: string;
+  nextTouch?: string;
+  notes?: string;
+  anamnesis?: Lead["anamnesis"];
 }): Promise<Lead> {
   const col = await leadsCollection();
   const now = new Date().toISOString();
@@ -132,9 +156,14 @@ export async function createLead(input: {
     diagnosis: input.diagnosis ?? "Уточняется в переписке",
     stage: input.stage ?? "new",
     assignee: input.assignee ?? "Не назначен",
-    nextTouch: now,
-    createdAt: now,
+    nextTouch: input.nextTouch ?? now,
+    createdAt: input.createdAt ?? now,
     aiPaused: false,
+    source: input.source,
+    campaign: input.campaign,
+    homeLocation: input.homeLocation,
+    notes: input.notes,
+    anamnesis: input.anamnesis,
   } satisfies Omit<LeadDoc, "_id">;
 
   const result = await col.insertOne(doc as LeadDoc);
@@ -143,7 +172,20 @@ export async function createLead(input: {
 
 export async function updateLead(
   id: string,
-  patch: Partial<Pick<Lead, "stage" | "aiPaused" | "nextTouch" | "assignee">>
+  patch: Partial<
+    Pick<
+      Lead,
+      | "stage"
+      | "aiPaused"
+      | "nextTouch"
+      | "assignee"
+      | "notes"
+      | "declinedReason"
+      | "source"
+      | "campaign"
+      | "homeLocation"
+    >
+  >
 ): Promise<Lead | undefined> {
   if (!ObjectId.isValid(id)) return undefined;
   const col = await leadsCollection();

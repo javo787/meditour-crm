@@ -35,5 +35,5 @@ export async function getDb(): Promise<Db> {
   // Имя базы задаём явно, а не полагаемся на путь в MONGODB_URI — иначе
   // легко случайно попасть в базу "test", если её забыли указать в строке
   // подключения.
-  return client.db("meditour");
+  return client.db("meditur");
 }

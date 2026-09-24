@@ -6,7 +6,7 @@ import { Providers } from "@/components/layout/providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Meditour CRM",
+  title: "Meditur CRM",
   description: "Координация лидов лечения за рубежом через WhatsApp",
 };
 

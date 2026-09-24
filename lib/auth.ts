@@ -17,15 +17,15 @@ export const authOptions: NextAuthOptions = {
       },
       async authorize(credentials) {
         const demoEmail =
-          process.env.DEMO_COORDINATOR_EMAIL ?? "coordinator@meditour.local";
+          process.env.DEMO_COORDINATOR_EMAIL ?? "coordinator@meditur.local";
         const demoPassword =
-          process.env.DEMO_COORDINATOR_PASSWORD ?? "meditour2026";
+          process.env.DEMO_COORDINATOR_PASSWORD ?? "meditur2026_demo";
 
         if (
           credentials?.email === demoEmail &&
           credentials?.password === demoPassword
         ) {
-          return { id: "1", name: "Координатор Meditour", email: demoEmail };
+          return { id: "1", name: "Координатор Meditur", email: demoEmail };
         }
         return null;
       },

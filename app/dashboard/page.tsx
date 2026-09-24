@@ -1,5 +1,6 @@
 import { getLeadsByStage } from "@/lib/db";
 import { KanbanBoard } from "@/components/leads/kanban-board";
+import { KpiBar } from "@/components/leads/kpi-bar";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,7 @@ export default async function DashboardPage() {
           Перетащите карточку пациента между этапами — статус обновится сразу
         </p>
       </div>
+      <KpiBar columns={columns} />
       <KanbanBoard initialColumns={columns} />
     </div>
   );

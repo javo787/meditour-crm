@@ -6,6 +6,7 @@ import { getLead, getMessages } from "@/lib/db";
 import { AnamnesisPanel } from "@/components/leads/patient-card/anamnesis-panel";
 import { ChatPanel } from "@/components/leads/patient-card/chat-panel";
 import { GeneratePanel } from "@/components/leads/patient-card/generate-panel";
+import { NotesPanel } from "@/components/leads/patient-card/notes-panel";
 import { StagePanel } from "@/components/leads/patient-card/stage-panel";
 
 export default async function LeadDetailPage({ params }: { params: { id: string } }) {
@@ -38,6 +39,7 @@ export default async function LeadDetailPage({ params }: { params: { id: string 
         </div>
         <div className="flex flex-col gap-4">
           <StagePanel lead={lead} />
+          <NotesPanel leadId={lead.id} initialNotes={lead.notes} />
           <GeneratePanel leadId={lead.id} />
         </div>
       </div>

@@ -22,7 +22,7 @@ export async function POST(
   const text = [
     "MEDICAL OPINION REQUEST",
     "",
-    "Referring coordinator: Meditour",
+    "Referring coordinator: Meditur",
     `Patient reference: ${lead.id}`,
     `Age: ${lead.anamnesis?.age ?? "not specified"}`,
     `Working diagnosis (per referring physician): ${lead.diagnosis}`,

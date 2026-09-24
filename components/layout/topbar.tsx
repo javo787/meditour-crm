@@ -27,7 +27,7 @@ export function Topbar() {
 
   return (
     <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-card px-5">
-      <div className="text-sm text-muted-foreground">Meditour · WhatsApp CRM</div>
+      <div className="text-sm text-muted-foreground">Meditur · WhatsApp CRM</div>
       <div className="flex items-center gap-2">
         <ThemeToggle />
         <DropdownMenu>

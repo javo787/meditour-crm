@@ -6,9 +6,23 @@ export const dynamic = "force-dynamic";
 
 const patchSchema = z.object({
   stage: z
-    .enum(["new", "data_collection", "waiting_india", "plan_sent", "declined", "won"])
+    .enum([
+      "new",
+      "first_contact",
+      "consult_scheduled",
+      "consult_done",
+      "estimate_sent",
+      "awaiting_decision",
+      "won",
+      "declined",
+    ])
     .optional(),
   aiPaused: z.boolean().optional(),
+  notes: z.string().max(4000).optional(),
+  declinedReason: z.string().max(500).optional(),
+  source: z.string().max(200).optional(),
+  campaign: z.string().max(300).optional(),
+  homeLocation: z.string().max(200).optional(),
 });
 
 export async function GET(

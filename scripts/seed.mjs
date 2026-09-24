@@ -22,17 +22,17 @@ const inDays = (n) => new Date(Date.now() + n * 86400000).toISOString();
 const leadsInput = [
   { name: "Фаррух Назаров", phone: "+992927101422", diagnosis: "ИБС, планируется шунтирование", stage: "new", assignee: ASSIGNEES[0], nextTouch: inDays(0), createdAt: daysAgo(0), aiPaused: false, anamnesis: { age: 54, proceduresDone: ["ЭКГ", "Коронарография (Душанбе)"], summary: "Жалобы на давящую боль за грудиной при нагрузке. Снимки коронарографии уже в переписке." } },
   { name: "Мадина Юсупова", phone: "+998901234567", diagnosis: "Эндопротезирование тазобедренного сустава", stage: "new", assignee: ASSIGNEES[1], nextTouch: inDays(1), createdAt: daysAgo(0), aiPaused: false },
-  { name: "Далер Каримов", phone: "+992935552011", diagnosis: "Стеноз поясничного отдела позвоночника", stage: "data_collection", assignee: ASSIGNEES[0], nextTouch: inDays(2), createdAt: daysAgo(2), aiPaused: false },
-  { name: "Нигора Ортикова", phone: "+998932109876", diagnosis: "Врождённый порок сердца (дочь, 5 лет)", stage: "data_collection", assignee: ASSIGNEES[2], nextTouch: inDays(-1), createdAt: daysAgo(3), aiPaused: true, anamnesis: { age: 5, proceduresDone: ["ЭхоКГ"], summary: "Мать попросила связать с живым координатором — ИИ поставлен на паузу." } },
-  { name: "Шерали Рахимов", phone: "+992987773009", diagnosis: "Онкология щитовидной железы", stage: "waiting_india", assignee: ASSIGNEES[1], hospital: "Apollo Hospitals, Chennai", nextTouch: inDays(4), createdAt: daysAgo(6), aiPaused: false },
-  { name: "Гулнора Собирова", phone: "+998914567890", diagnosis: "Замена митрального клапана", stage: "waiting_india", assignee: ASSIGNEES[0], hospital: "Medanta – The Medicity", nextTouch: inDays(-2), createdAt: daysAgo(8), aiPaused: false, anamnesis: { age: 61, proceduresDone: ["ЭхоКГ", "Катетеризация сердца"], summary: "Митральная недостаточность 3 степени. План лечения направлен, ждём решения семьи." } },
-  { name: "Умед Холов", phone: "+992901124590", diagnosis: "Эндопротезирование коленного сустава", stage: "plan_sent", assignee: ASSIGNEES[2], hospital: "Fortis Memorial, Gurugram", nextTouch: inDays(1), createdAt: daysAgo(10), aiPaused: false },
-  { name: "Зарина Тошева", phone: "+998973332144", diagnosis: "Онкогематология, уточнение протокола", stage: "plan_sent", assignee: ASSIGNEES[1], hospital: "Artemis Hospital, Gurugram", nextTouch: inDays(3), createdAt: daysAgo(5), aiPaused: false },
+  { name: "Далер Каримов", phone: "+992935552011", diagnosis: "Стеноз поясничного отдела позвоночника", stage: "first_contact", assignee: ASSIGNEES[0], nextTouch: inDays(2), createdAt: daysAgo(2), aiPaused: false },
+  { name: "Нигора Ортикова", phone: "+998932109876", diagnosis: "Врождённый порок сердца (дочь, 5 лет)", stage: "first_contact", assignee: ASSIGNEES[2], nextTouch: inDays(-1), createdAt: daysAgo(3), aiPaused: true, anamnesis: { age: 5, proceduresDone: ["ЭхоКГ"], summary: "Мать попросила связать с живым координатором — ИИ поставлен на паузу." } },
+  { name: "Шерали Рахимов", phone: "+992987773009", diagnosis: "Онкология щитовидной железы", stage: "awaiting_decision", assignee: ASSIGNEES[1], hospital: "Apollo Hospitals, Chennai", nextTouch: inDays(4), createdAt: daysAgo(6), aiPaused: false },
+  { name: "Гулнора Собирова", phone: "+998914567890", diagnosis: "Замена митрального клапана", stage: "awaiting_decision", assignee: ASSIGNEES[0], hospital: "Medanta – The Medicity", nextTouch: inDays(-2), createdAt: daysAgo(8), aiPaused: false, anamnesis: { age: 61, proceduresDone: ["ЭхоКГ", "Катетеризация сердца"], summary: "Митральная недостаточность 3 степени. План лечения направлен, ждём решения семьи." } },
+  { name: "Умед Холов", phone: "+992901124590", diagnosis: "Эндопротезирование коленного сустава", stage: "estimate_sent", assignee: ASSIGNEES[2], hospital: "Fortis Memorial, Gurugram", nextTouch: inDays(1), createdAt: daysAgo(10), aiPaused: false },
+  { name: "Зарина Тошева", phone: "+998973332144", diagnosis: "Онкогематология, уточнение протокола", stage: "estimate_sent", assignee: ASSIGNEES[1], hospital: "Artemis Hospital, Gurugram", nextTouch: inDays(3), createdAt: daysAgo(5), aiPaused: false },
   { name: "Бахтиёр Эргашев", phone: "+992919006612", diagnosis: "Реконструктивная хирургия кисти", stage: "declined", assignee: ASSIGNEES[0], nextTouch: inDays(30), createdAt: daysAgo(14), aiPaused: true },
   { name: "Мунира Абдуллаева", phone: "+998886543210", diagnosis: "Плановое обследование ЖКТ", stage: "declined", assignee: ASSIGNEES[2], nextTouch: inDays(45), createdAt: daysAgo(20), aiPaused: true },
   { name: "Хуршед Сафаров", phone: "+992934801577", diagnosis: "Аортокоронарное шунтирование", stage: "won", assignee: ASSIGNEES[1], hospital: "Apollo Hospitals, Chennai", nextTouch: inDays(60), createdAt: daysAgo(25), aiPaused: true },
   { name: "Дилноза Каххорова", phone: "+998907778899", diagnosis: "Эндопротезирование тазобедренного сустава", stage: "won", assignee: ASSIGNEES[0], hospital: "BLK-Max, Delhi", nextTouch: inDays(60), createdAt: daysAgo(18), aiPaused: true },
-  { name: "Тимур Джураев", phone: "+992982004060", diagnosis: "Консультация по трансплантации печени", stage: "data_collection", assignee: ASSIGNEES[1], nextTouch: inDays(-3), createdAt: daysAgo(4), aiPaused: false },
+  { name: "Тимур Джураев", phone: "+992982004060", diagnosis: "Консультация по трансплантации печени", stage: "first_contact", assignee: ASSIGNEES[1], nextTouch: inDays(-3), createdAt: daysAgo(4), aiPaused: false },
   { name: "Севара Ниязова", phone: "+998931112233", diagnosis: "Диагностика по болям в суставах", stage: "new", assignee: ASSIGNEES[2], nextTouch: inDays(0), createdAt: daysAgo(1), aiPaused: false },
 ];
 
@@ -53,7 +53,7 @@ const threads = {
 async function main() {
   const client = new MongoClient(uri);
   await client.connect();
-  const db = client.db("meditour");
+  const db = client.db("meditur");
   const leadsCol = db.collection("Leads");
   const messagesCol = db.collection("Messages");
 
@@ -89,7 +89,7 @@ async function main() {
     }
   }
 
-  console.log(`Готово: добавлено ${insertedLeads} лидов и ${insertedMessages} сообщений в базу "meditour".`);
+  console.log(`Готово: добавлено ${insertedLeads} лидов и ${insertedMessages} сообщений в базу "meditur".`);
   await client.close();
 }
 

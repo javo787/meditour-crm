@@ -91,7 +91,12 @@ export async function POST(request: Request) {
   // 1) Проверяем, существует ли номер в базе — если нет, заводим лид «Новый».
   let lead = await findLeadByPhone(phone);
   if (!lead) {
-    lead = await createLead({ name: data?.pushName || phone, phone, stage: "new" });
+    lead = await createLead({
+      name: data?.pushName || phone,
+      phone,
+      stage: "new",
+      source: "WhatsApp",
+    });
   }
 
   // 2) Сохраняем сообщение пациента в историю переписки.
@@ -116,7 +121,7 @@ export async function POST(request: Request) {
     await sendWhatsAppText(phone, reply);
 
     if (lead.stage === "new") {
-      await updateLead(lead.id, { stage: "data_collection" });
+      await updateLead(lead.id, { stage: "first_contact" });
     }
   } catch (err) {
     // Сообщение пациента уже сохранено — координатор увидит его в карточке
