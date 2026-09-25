@@ -7,5 +7,8 @@ export default withAuth({
 });
 
 export const config = {
-  matcher: ["/dashboard/:path*"],
+  matcher: [
+    "/dashboard/:path*",
+    "/api/((?!auth|whatsapp-webhook|cron).*)"
+  ],
 };
