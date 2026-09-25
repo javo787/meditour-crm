@@ -41,7 +41,13 @@ interface EvolutionWebhookBody {
 // что вебхук пришёл действительно от нашего инстанса, а не от кого попало.
 function isAuthentic(body: EvolutionWebhookBody): boolean {
   const expected = process.env.EVOLUTION_API_KEY;
-  if (!expected) return true; // ключ ещё не настроен — не блокируем локальную разработку
+  if (!expected) {
+    // Only allow fail-open in development environment
+    if (process.env.NODE_ENV === "development") {
+      return true;
+    }
+    return false; // Fail closed in production if key is missing
+  }
   return body.apikey === expected;
 }
 
