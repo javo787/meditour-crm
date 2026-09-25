@@ -2,10 +2,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 
-import { getLead, getMessages } from "@/lib/db";
+import { getCaseAssistantMessages, getLead, getMessages } from "@/lib/db";
 import { AnamnesisPanel } from "@/components/leads/patient-card/anamnesis-panel";
+import { CaseAssistantPanel } from "@/components/leads/patient-card/case-assistant-panel";
 import { ChatPanel } from "@/components/leads/patient-card/chat-panel";
-import { GeneratePanel } from "@/components/leads/patient-card/generate-panel";
 import { NotesPanel } from "@/components/leads/patient-card/notes-panel";
 import { StagePanel } from "@/components/leads/patient-card/stage-panel";
 
@@ -13,6 +13,7 @@ export default async function LeadDetailPage({ params }: { params: { id: string 
   const lead = await getLead(params.id);
   if (!lead) notFound();
   const messages = await getMessages(params.id);
+  const caseAssistantMessages = await getCaseAssistantMessages(params.id);
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto p-5">
@@ -40,7 +41,7 @@ export default async function LeadDetailPage({ params }: { params: { id: string 
         <div className="flex flex-col gap-4">
           <StagePanel lead={lead} />
           <NotesPanel leadId={lead.id} initialNotes={lead.notes} />
-          <GeneratePanel leadId={lead.id} />
+          <CaseAssistantPanel leadId={lead.id} initialMessages={caseAssistantMessages} />
         </div>
       </div>
     </div>

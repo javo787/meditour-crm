@@ -1,7 +1,7 @@
 import { ObjectId, type Collection } from "mongodb";
 
 import { getDb } from "@/lib/mongodb";
-import type { ChatMessage, Lead, MessageSender, Stage } from "@/lib/types";
+import type { CaseAssistantMessage, CaseAssistantRole, ChatMessage, Lead, MessageSender, Stage } from "@/lib/types";
 
 // Слой данных поверх MongoDB Atlas (коллекции Leads и Messages из Этапа 1
 // плана). Раньше (Этап 2) здесь был массив в памяти процесса — сигнатуры
@@ -38,6 +38,16 @@ interface MessageDoc {
   at: string;
 }
 
+// Отдельная коллекция от Messages: это переписка координатора с
+// ассистентом подготовки Medical Opinion Request, а не с пациентом.
+interface CaseAssistantMessageDoc {
+  _id: ObjectId;
+  leadId: ObjectId;
+  role: CaseAssistantRole;
+  text: string;
+  at: string;
+}
+
 async function leadsCollection(): Promise<Collection<LeadDoc>> {
   const db = await getDb();
   return db.collection<LeadDoc>("Leads");
@@ -46,6 +56,11 @@ async function leadsCollection(): Promise<Collection<LeadDoc>> {
 async function messagesCollection(): Promise<Collection<MessageDoc>> {
   const db = await getDb();
   return db.collection<MessageDoc>("Messages");
+}
+
+async function caseAssistantMessagesCollection(): Promise<Collection<CaseAssistantMessageDoc>> {
+  const db = await getDb();
+  return db.collection<CaseAssistantMessageDoc>("CaseAssistantMessages");
 }
 
 function toLead(doc: LeadDoc): Lead {
@@ -76,6 +91,16 @@ function toMessage(doc: MessageDoc): ChatMessage {
     id: doc._id.toString(),
     leadId: doc.leadId.toString(),
     from: doc.from,
+    text: doc.text,
+    at: doc.at,
+  };
+}
+
+function toCaseAssistantMessage(doc: CaseAssistantMessageDoc): CaseAssistantMessage {
+  return {
+    id: doc._id.toString(),
+    leadId: doc.leadId.toString(),
+    role: doc.role,
     text: doc.text,
     at: doc.at,
   };
@@ -229,4 +254,31 @@ export async function addMessage(
 
   const result = await col.insertOne(doc as MessageDoc);
   return toMessage({ _id: result.insertedId, ...doc });
+}
+
+export async function getCaseAssistantMessages(leadId: string): Promise<CaseAssistantMessage[]> {
+  if (!ObjectId.isValid(leadId)) return [];
+  const col = await caseAssistantMessagesCollection();
+  const docs = await col
+    .find({ leadId: new ObjectId(leadId) })
+    .sort({ at: 1 })
+    .toArray();
+  return docs.map(toCaseAssistantMessage);
+}
+
+export async function addCaseAssistantMessage(
+  leadId: string,
+  role: CaseAssistantRole,
+  text: string
+): Promise<CaseAssistantMessage> {
+  const col = await caseAssistantMessagesCollection();
+  const doc = {
+    leadId: new ObjectId(leadId),
+    role,
+    text,
+    at: new Date().toISOString(),
+  } satisfies Omit<CaseAssistantMessageDoc, "_id">;
+
+  const result = await col.insertOne(doc as CaseAssistantMessageDoc);
+  return toCaseAssistantMessage({ _id: result.insertedId, ...doc });
 }

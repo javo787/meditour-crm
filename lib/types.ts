@@ -49,3 +49,16 @@ export interface ChatMessage {
   text: string;
   at: string; // ISO datetime
 }
+
+// Отдельный тред координатора с ассистентом подготовки Medical Opinion
+// Request (Этап 4) — намеренно не смешан с ChatMessage/MessageSender выше,
+// это внутренняя переписка с ИИ по документу, а не с пациентом в WhatsApp.
+export type CaseAssistantRole = "user" | "assistant";
+
+export interface CaseAssistantMessage {
+  id: string;
+  leadId: string;
+  role: CaseAssistantRole;
+  text: string;
+  at: string; // ISO datetime
+}
