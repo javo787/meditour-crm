@@ -35,6 +35,9 @@ export interface Lead {
   homeLocation?: string; // Город, страна проживания пациента
   declinedReason?: string; // Причина отказа
   notes?: string; // Свободные заметки координатора (не переписка с ИИ)
+  // Для автоматической каденции follow-up после «Сметы» (см. lib/follow-up.ts)
+  estimateSentAt?: string; // ISO — когда лид зашёл в estimate_sent
+  followUpStep?: number; // 0 = ничего не отправлено, 1..4 = какой шаг каденции уже сделан
 }
 
 export type MessageSender = "patient" | "ai" | "coordinator";

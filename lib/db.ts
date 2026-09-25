@@ -26,6 +26,8 @@ interface LeadDoc {
   homeLocation?: string;
   declinedReason?: string;
   notes?: string;
+  estimateSentAt?: string;
+  followUpStep?: number;
 }
 
 interface MessageDoc {
@@ -64,6 +66,8 @@ function toLead(doc: LeadDoc): Lead {
     homeLocation: doc.homeLocation,
     declinedReason: doc.declinedReason,
     notes: doc.notes,
+    estimateSentAt: doc.estimateSentAt,
+    followUpStep: doc.followUpStep,
   };
 }
 
@@ -184,6 +188,8 @@ export async function updateLead(
       | "source"
       | "campaign"
       | "homeLocation"
+      | "estimateSentAt"
+      | "followUpStep"
     >
   >
 ): Promise<Lead | undefined> {

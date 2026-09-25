@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { addMessage, getLead, updateLead } from "@/lib/db";
+import { sendDay0 } from "@/lib/follow-up";
 
 export const dynamic = "force-dynamic";
 
@@ -46,7 +47,20 @@ export async function PATCH(
     return NextResponse.json({ error: "Некорректные данные" }, { status: 400 });
   }
 
-  const lead = await updateLead(params.id, parsed.data);
+  const before = await getLead(params.id);
+  if (!before) {
+    return NextResponse.json({ error: "Лид не найден" }, { status: 404 });
+  }
+
+  const enteringEstimateSent =
+    parsed.data.stage === "estimate_sent" && before.stage !== "estimate_sent";
+
+  const lead = await updateLead(params.id, {
+    ...parsed.data,
+    ...(enteringEstimateSent
+      ? { estimateSentAt: new Date().toISOString(), followUpStep: 0 }
+      : {}),
+  });
   if (!lead) {
     return NextResponse.json({ error: "Лид не найден" }, { status: 404 });
   }
@@ -59,6 +73,10 @@ export async function PATCH(
         ? "— ИИ поставлен на паузу координатором —"
         : "— ИИ снова ведёт диалог —"
     );
+  }
+
+  if (enteringEstimateSent) {
+    await sendDay0(lead);
   }
 
   return NextResponse.json({ lead });
