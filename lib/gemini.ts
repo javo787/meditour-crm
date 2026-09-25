@@ -72,7 +72,11 @@ async function callModel(
 
 export async function askGemini(params: {
   history: ChatMessage[];
-  items: Array<{ text: string; image?: { base64: string; mimeType: string } }>;
+  items: Array<{
+    text: string;
+    image?: { base64: string; mimeType: string };
+    audio?: { base64: string; mimeType: string };
+  }>;
   requestId?: string;
 }): Promise<string> {
   const logger = params.requestId ? log.child(params.requestId) : log;
@@ -90,6 +94,7 @@ export async function askGemini(params: {
   const newParts: GeminiPart[] = [];
   let totalTextLength = 0;
   let imageCount = 0;
+  let audioCount = 0;
   let hasTextInBatch = false;
 
   for (const item of params.items) {
@@ -104,9 +109,15 @@ export async function askGemini(params: {
       });
       imageCount++;
     }
+    if (item.audio) {
+      newParts.push({
+        inlineData: { mimeType: item.audio.mimeType, data: item.audio.base64 },
+      });
+      audioCount++;
+    }
   }
 
-  if (!hasTextInBatch && imageCount === 0) {
+  if (!hasTextInBatch && imageCount === 0 && audioCount === 0) {
     newParts.push({ text: "(сообщение пришло без текста)" });
   }
 
@@ -117,6 +128,7 @@ export async function askGemini(params: {
     historyMessages: params.history.length,
     itemCount: params.items.length,
     imageCount,
+    audioCount,
     totalTextLength,
   });
 

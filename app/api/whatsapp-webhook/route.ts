@@ -14,7 +14,11 @@ const BATCH_DEBOUNCE_MS = 8000;
 // NOTE: module-level state works here because the service runs with WEB_CONCURRENCY=1 (a single Node process).
 // If scaled to multiple instances, this needs to be moved to a shared store (e.g., Redis).
 const pendingBatches = new Map<string, {
-  items: Array<{ text: string; image?: { base64: string; mimeType: string } }>;
+  items: Array<{
+    text: string;
+    image?: { base64: string; mimeType: string };
+    audio?: { base64: string; mimeType: string };
+  }>;
   timer: NodeJS.Timeout;
 }>();
 
@@ -33,6 +37,7 @@ interface EvolutionWebhookBody {
       conversation?: string;
       extendedTextMessage?: { text?: string };
       imageMessage?: { caption?: string };
+      audioMessage?: { mimetype?: string; ptt?: boolean; seconds?: number };
     };
   };
 }
@@ -120,11 +125,13 @@ async function extractMessageContent(
 ) {
   let text = message?.conversation ?? message?.extendedTextMessage?.text ?? "";
   let image: { base64: string; mimeType: string } | undefined;
+  let audio: { base64: string; mimeType: string } | undefined;
 
   log.info("7. разбор содержимого сообщения", {
     messageType,
     textLength: text.length,
     hasImageMessage: Boolean(message?.imageMessage),
+    hasAudioMessage: Boolean(message?.audioMessage),
   });
 
   if (messageType === "imageMessage" && message?.imageMessage) {
@@ -142,12 +149,39 @@ async function extractMessageContent(
         message: err instanceof Error ? err.message : String(err),
       });
     }
+  } else if (messageType === "audioMessage" && message?.audioMessage) {
+    // Голосовые (ptt: true) и обычные аудио-файлы приходят одним и тем же
+    // messageType — Evolution отдаёт их через тот же generic-эндпоинт
+    // getBase64FromMediaMessage, что и картинки, так что fetchMediaBase64
+    // менять не нужно. mimetype обычно "audio/ogg; codecs=opus" — отрезаем
+    // параметр кодека, Gemini ожидает чистый MIME-тип в inlineData.
+    log.info("7b. это голосовое/аудио сообщение — запрашиваем медиа из Evolution API", {
+      ptt: message.audioMessage.ptt,
+      seconds: message.audioMessage.seconds,
+    });
+    try {
+      const media = await fetchMediaBase64(key, requestId);
+      audio = { base64: media.base64, mimeType: media.mimetype.split(";")[0].trim() };
+      log.info("7b. аудио успешно получено и упаковано для Gemini", {
+        mimeType: audio.mimeType,
+        base64Length: audio.base64.length,
+      });
+    } catch (err) {
+      log.error("7b. не удалось скачать аудио из Evolution API — продолжаем без него", {
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   const storedText =
-    text || (image ? "📎 [изображение без подписи]" : "[неподдерживаемый тип сообщения]");
+    text ||
+    (image
+      ? "📎 [изображение без подписи]"
+      : audio
+      ? "🎤 [голосовое сообщение]"
+      : "[неподдерживаемый тип сообщения]");
 
-  return { text, storedText, image };
+  return { text, storedText, image, audio };
 }
 
 async function processNewMessage(
@@ -156,6 +190,7 @@ async function processNewMessage(
   text: string,
   storedText: string,
   image: { base64: string; mimeType: string } | undefined,
+  audio: { base64: string; mimeType: string } | undefined,
   log: Logger
 ) {
   // 1) Проверяем, существует ли номер в базе — если нет, заводим лид «Новый».
@@ -174,7 +209,11 @@ async function processNewMessage(
   }
 
   // 2) Сохраняем сообщение пациента в историю переписки.
-  await addMessage(lead.id, "patient", storedText + (image ? " (+фото)" : ""));
+  await addMessage(
+    lead.id,
+    "patient",
+    storedText + (image ? " (+фото)" : "") + (audio ? " (+голосовое)" : "")
+  );
   log.info("9. сообщение пациента сохранено в историю", { leadId: lead.id, storedTextLength: storedText.length });
 
   // 3) Маршрутизатор статусов: если координатор уже взял диалог на себя
@@ -194,7 +233,7 @@ async function processNewMessage(
     pendingBatches.set(lead.id, batch);
   }
 
-  batch.items.push({ text, image });
+  batch.items.push({ text, image, audio });
   batch.timer = setTimeout(() => processBatch(lead.id, phone), BATCH_DEBOUNCE_MS);
 
   log.info("11. сообщение добавлено в буфер, таймер обновлен", { leadId: lead.id, itemsCount: batch.items.length });
@@ -214,7 +253,7 @@ export async function POST(request: Request) {
   const { body, phone } = validationResult;
   const data = body.data as NonNullable<EvolutionWebhookBody["data"]>;
 
-  const { text, storedText, image } = await extractMessageContent(
+  const { text, storedText, image, audio } = await extractMessageContent(
     data.message,
     data.messageType ?? "",
     data.key,
@@ -222,7 +261,7 @@ export async function POST(request: Request) {
     log
   );
 
-  return await processNewMessage(phone, data, text, storedText, image, log);
+  return await processNewMessage(phone, data, text, storedText, image, audio, log);
 }
 
 async function processBatch(leadId: string, phone: string) {
