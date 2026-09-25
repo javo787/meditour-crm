@@ -25,6 +25,7 @@ export function ChatPanel({
   const [aiPaused, setAiPaused] = useState(initialAiPaused);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
 
   async function toggleAi() {
     const next = !aiPaused;
@@ -52,17 +53,22 @@ export function ChatPanel({
     const text = draft.trim();
     if (!text) return;
     setBusy(true);
-    setDraft("");
+    setSendError(null);
     try {
       const res = await fetch(`/api/leads/${leadId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text }),
       });
-      if (res.ok) {
-        const data = await res.json();
+      const data = await res.json().catch(() => null);
+      if (res.ok && data?.message) {
         setMessages((prev) => [...prev, data.message]);
+        setDraft("");
+      } else {
+        setSendError(data?.error || "Не удалось отправить сообщение");
       }
+    } catch {
+      setSendError("Не удалось отправить сообщение — проверьте соединение");
     } finally {
       setBusy(false);
     }
@@ -125,6 +131,7 @@ export function ChatPanel({
             <Send className="h-4 w-4" />
           </Button>
         </form>
+        {sendError && <p className="text-xs text-destructive">{sendError}</p>}
       </CardContent>
     </Card>
   );
