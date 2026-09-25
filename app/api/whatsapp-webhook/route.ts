@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { addMessage, createLead, findLeadByPhone, getLead, getMessages, updateLead } from "@/lib/db";
 import { fetchMediaBase64, sendWhatsAppText } from "@/lib/evolution";
 import { askGemini } from "@/lib/gemini";
-import { createLogger, newRequestId } from "@/lib/logger";
+import { createLogger, newRequestId, Logger } from "@/lib/logger";
 
 export const dynamic = "force-dynamic";
 
@@ -51,14 +51,10 @@ function extractPhone(remoteJid: string | undefined): string | null {
   return id || null;
 }
 
-export async function POST(request: Request) {
-  const requestId = newRequestId();
-  const log = baseLog.child(requestId);
-
-  log.info("1. запрос получен");
-
+async function parseAndValidateWebhook(request: Request, log: Logger) {
   const rawBody = await request.text();
   let body: EvolutionWebhookBody | null = null;
+
   try {
     body = JSON.parse(rawBody) as EvolutionWebhookBody;
   } catch (err) {
@@ -66,7 +62,7 @@ export async function POST(request: Request) {
       message: err instanceof Error ? err.message : String(err),
       rawBodyPreview: rawBody.slice(0, 500),
     });
-    return NextResponse.json({ error: "Некорректный JSON" }, { status: 400 });
+    return { errorResponse: NextResponse.json({ error: "Некорректный JSON" }, { status: 400 }) };
   }
 
   log.info("2. тело запроса распарсено", {
@@ -81,14 +77,14 @@ export async function POST(request: Request) {
     log.warn("3. проверка apikey не пройдена — запрос отклонён (401)", {
       apikeyConfigured: Boolean(process.env.EVOLUTION_API_KEY),
     });
-    return NextResponse.json({ error: "Неверный apikey" }, { status: 401 });
+    return { errorResponse: NextResponse.json({ error: "Неверный apikey" }, { status: 401 }) };
   }
   log.info("3. apikey подтверждён (или проверка отключена, т.к. EVOLUTION_API_KEY не задан)");
 
   // Нас интересуют только новые сообщения (не статусы прочтения и т.п.)
   if (body.event !== "messages.upsert") {
     log.info("4. событие пропущено — это не messages.upsert", { event: body.event });
-    return NextResponse.json({ ok: true, skipped: "event" });
+    return { earlyResponse: NextResponse.json({ ok: true, skipped: "event" }) };
   }
   log.info("4. событие messages.upsert принято");
 
@@ -101,32 +97,37 @@ export async function POST(request: Request) {
       hasKey: Boolean(key),
       fromMe: key?.fromMe,
     });
-    return NextResponse.json({ ok: true, skipped: "fromMe" });
+    return { earlyResponse: NextResponse.json({ ok: true, skipped: "fromMe" }) };
   }
   log.info("5. это входящее сообщение от пациента (не эхо)");
 
   const phone = extractPhone(key.remoteJid);
   if (!phone) {
     log.warn("6. не удалось извлечь номер телефона из remoteJid", { remoteJid: key.remoteJid });
-    return NextResponse.json({ ok: true, skipped: "no-phone" });
+    return { earlyResponse: NextResponse.json({ ok: true, skipped: "no-phone" }) };
   }
   log.info("6. номер телефона извлечён", { phone });
 
-  const message = data?.message ?? {};
-  const messageType = data?.messageType ?? "";
+  return { body, phone };
+}
 
-  let text = message.conversation ?? message.extendedTextMessage?.text ?? "";
+async function extractMessageContent(
+  message: NonNullable<EvolutionWebhookBody["data"]>["message"],
+  messageType: string,
+  key: NonNullable<EvolutionWebhookBody["data"]>["key"],
+  requestId: string,
+  log: Logger
+) {
+  let text = message?.conversation ?? message?.extendedTextMessage?.text ?? "";
   let image: { base64: string; mimeType: string } | undefined;
 
   log.info("7. разбор содержимого сообщения", {
     messageType,
     textLength: text.length,
-    hasImageMessage: Boolean(message.imageMessage),
+    hasImageMessage: Boolean(message?.imageMessage),
   });
 
-  // Обработка медиафайлов: скачиваем через Evolution, конвертируем в base64
-  // и упаковываем для Gemini (imageParts).
-  if (messageType === "imageMessage" && message.imageMessage) {
+  if (messageType === "imageMessage" && message?.imageMessage) {
     log.info("7a. это изображение — запрашиваем медиа из Evolution API");
     try {
       const media = await fetchMediaBase64(key, requestId);
@@ -146,6 +147,17 @@ export async function POST(request: Request) {
   const storedText =
     text || (image ? "📎 [изображение без подписи]" : "[неподдерживаемый тип сообщения]");
 
+  return { text, storedText, image };
+}
+
+async function processNewMessage(
+  phone: string,
+  data: NonNullable<EvolutionWebhookBody["data"]>,
+  text: string,
+  storedText: string,
+  image: { base64: string; mimeType: string } | undefined,
+  log: Logger
+) {
   // 1) Проверяем, существует ли номер в базе — если нет, заводим лид «Новый».
   let lead = await findLeadByPhone(phone);
   if (!lead) {
@@ -187,6 +199,30 @@ export async function POST(request: Request) {
 
   log.info("11. сообщение добавлено в буфер, таймер обновлен", { leadId: lead.id, itemsCount: batch.items.length });
   return NextResponse.json({ ok: true, buffered: true });
+}
+
+export async function POST(request: Request) {
+  const requestId = newRequestId();
+  const log = baseLog.child(requestId);
+
+  log.info("1. запрос получен");
+
+  const validationResult = await parseAndValidateWebhook(request, log);
+  if ("errorResponse" in validationResult) return validationResult.errorResponse;
+  if ("earlyResponse" in validationResult) return validationResult.earlyResponse;
+
+  const { body, phone } = validationResult;
+  const data = body.data as NonNullable<EvolutionWebhookBody["data"]>;
+
+  const { text, storedText, image } = await extractMessageContent(
+    data.message,
+    data.messageType ?? "",
+    data.key,
+    requestId,
+    log
+  );
+
+  return await processNewMessage(phone, data, text, storedText, image, log);
 }
 
 async function processBatch(leadId: string, phone: string) {
