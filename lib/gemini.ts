@@ -106,7 +106,7 @@ export async function askGemini(params: {
     }
   }
 
-  if (!hasTextInBatch) {
+  if (!hasTextInBatch && imageCount === 0) {
     newParts.push({ text: "(сообщение пришло без текста)" });
   }
 
