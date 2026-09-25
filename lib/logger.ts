@@ -35,12 +35,28 @@ export interface Logger {
   child(requestId: string): Logger;
 }
 
-export function createLogger(scope: string, requestId?: string): Logger {
+export interface LogOutput {
+  info(message: string): void;
+  warn(message: string): void;
+  error(message: string): void;
+}
+
+export const consoleOutput: LogOutput = {
+  info: (message) => console.log(message),
+  warn: (message) => console.warn(message),
+  error: (message) => console.error(message),
+};
+
+export function createLogger(
+  scope: string,
+  requestId?: string,
+  output: LogOutput = consoleOutput
+): Logger {
   return {
-    info: (step, data) => console.log(line(scope, "info", requestId, step, data)),
-    warn: (step, data) => console.warn(line(scope, "warn", requestId, step, data)),
-    error: (step, data) => console.error(line(scope, "error", requestId, step, data)),
-    child: (childRequestId: string) => createLogger(scope, childRequestId),
+    info: (step, data) => output.info(line(scope, "info", requestId, step, data)),
+    warn: (step, data) => output.warn(line(scope, "warn", requestId, step, data)),
+    error: (step, data) => output.error(line(scope, "error", requestId, step, data)),
+    child: (childRequestId: string) => createLogger(scope, childRequestId, output),
   };
 }
 
