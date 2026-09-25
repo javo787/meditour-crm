@@ -1,5 +1,5 @@
 import type { ChatMessage } from "@/lib/types";
-import { createLogger } from "@/lib/logger";
+import { createLogger, type Logger } from "@/lib/logger";
 import { MEDITUR_SYSTEM_PROMPT } from "@/lib/playbook";
 
 const log = createLogger("gemini");
@@ -29,14 +29,19 @@ interface GeminiPart {
   inlineData?: { mimeType: string; data: string };
 }
 
+interface GeminiContent {
+  role: "user" | "model";
+  parts: GeminiPart[];
+}
+
 function roleFor(from: ChatMessage["from"]): "user" | "model" {
   return from === "ai" ? "model" : "user";
 }
 
 async function callModel(
   model: string,
-  contents: any[],
-  logger: any
+  contents: GeminiContent[],
+  logger: Logger
 ): Promise<
   | { ok: true; res: Response }
   | { ok: false; status: number; body: string; retryable: boolean }
@@ -82,7 +87,7 @@ export async function askGemini(params: {
     throw new Error("GEMINI_API_KEY не задан — добавьте его в .env.local");
   }
 
-  const contents = params.history.map((m) => ({
+  const contents: GeminiContent[] = params.history.map((m) => ({
     role: roleFor(m.from),
     parts: [{ text: m.text }] as GeminiPart[],
   }));
