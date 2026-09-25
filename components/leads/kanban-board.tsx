@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -29,11 +29,19 @@ export function KanbanBoard({
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } })
   );
 
+  const leadStageMap = useMemo(() => {
+    const map = new Map<string, Stage>();
+    for (const [stage, leads] of Object.entries(columns)) {
+      for (const lead of leads) {
+        map.set(lead.id, stage as Stage);
+      }
+    }
+    return map;
+  }, [columns]);
+
   function findColumn(id: string): Stage | undefined {
     if (id in columns) return id as Stage;
-    return (Object.keys(columns) as Stage[]).find((stage) =>
-      columns[stage].some((l) => l.id === id)
-    );
+    return leadStageMap.get(id);
   }
 
   function handleDragStart(event: DragStartEvent) {
