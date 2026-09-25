@@ -196,9 +196,12 @@ export async function updateLead(
   if (!ObjectId.isValid(id)) return undefined;
   const col = await leadsCollection();
   const _id = new ObjectId(id);
-  await col.updateOne({ _id }, { $set: patch });
-  const doc = await col.findOne({ _id });
-  return doc ? toLead(doc) : undefined;
+  const doc = await col.findOneAndUpdate(
+    { _id },
+    { $set: patch },
+    { returnDocument: "after" }
+  );
+  return doc ? toLead(doc as LeadDoc) : undefined;
 }
 
 export async function getMessages(leadId: string): Promise<ChatMessage[]> {
