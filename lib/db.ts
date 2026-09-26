@@ -36,6 +36,7 @@ interface MessageDoc {
   from: MessageSender;
   text: string;
   at: string;
+  media?: { kind: "image" | "audio"; mimeType: string };
 }
 
 // Отдельная коллекция от Messages: это переписка координатора с
@@ -45,6 +46,21 @@ interface CaseAssistantMessageDoc {
   leadId: ObjectId;
   role: CaseAssistantRole;
   text: string;
+  at: string;
+}
+
+// Реальные байты фото/голосовых из WhatsApp — раньше нигде не сохранялись
+// (fetchMediaBase64 доставал их из Evolution API один раз для ответа
+// Gemini и тут же терял). Отдельная коллекция, а не поле на самом
+// MessageDoc — чтобы getMessages() не тянул бинарные данные там, где
+// нужен только текст.
+interface MediaAssetDoc {
+  _id: ObjectId;
+  leadId: ObjectId;
+  messageId: ObjectId;
+  kind: "image" | "audio";
+  mimeType: string;
+  data: Buffer;
   at: string;
 }
 
@@ -61,6 +77,11 @@ async function messagesCollection(): Promise<Collection<MessageDoc>> {
 async function caseAssistantMessagesCollection(): Promise<Collection<CaseAssistantMessageDoc>> {
   const db = await getDb();
   return db.collection<CaseAssistantMessageDoc>("CaseAssistantMessages");
+}
+
+async function mediaAssetsCollection(): Promise<Collection<MediaAssetDoc>> {
+  const db = await getDb();
+  return db.collection<MediaAssetDoc>("MediaAssets");
 }
 
 function toLead(doc: LeadDoc): Lead {
@@ -93,6 +114,7 @@ function toMessage(doc: MessageDoc): ChatMessage {
     from: doc.from,
     text: doc.text,
     at: doc.at,
+    media: doc.media,
   };
 }
 
@@ -243,7 +265,8 @@ export async function getMessages(leadId: string): Promise<ChatMessage[]> {
 export async function addMessage(
   leadId: string,
   from: MessageSender,
-  text: string
+  text: string,
+  media?: { kind: "image" | "audio"; mimeType: string }
 ): Promise<ChatMessage> {
   const col = await messagesCollection();
   const doc = {
@@ -251,10 +274,61 @@ export async function addMessage(
     from,
     text,
     at: new Date().toISOString(),
+    media,
   } satisfies Omit<MessageDoc, "_id">;
 
   const result = await col.insertOne(doc as MessageDoc);
   return toMessage({ _id: result.insertedId, ...doc });
+}
+
+// Сохраняет реальные байты (после того как сообщение уже создано через
+// addMessage выше и известен его id). base64 приходит как есть из
+// fetchMediaBase64 (Evolution API) — декодируем один раз здесь, чтобы в
+// Mongo лежал компактный BSON Binary, а не текстовая base64-строка на
+// треть больше.
+export async function saveMediaAsset(params: {
+  leadId: string;
+  messageId: string;
+  kind: "image" | "audio";
+  mimeType: string;
+  base64: string;
+}): Promise<void> {
+  const col = await mediaAssetsCollection();
+  await col.insertOne({
+    leadId: new ObjectId(params.leadId),
+    messageId: new ObjectId(params.messageId),
+    kind: params.kind,
+    mimeType: params.mimeType,
+    data: Buffer.from(params.base64, "base64"),
+    at: new Date().toISOString(),
+  } as MediaAssetDoc);
+}
+
+export async function getMediaAssetByMessageId(
+  messageId: string
+): Promise<{ kind: "image" | "audio"; mimeType: string; base64: string } | undefined> {
+  if (!ObjectId.isValid(messageId)) return undefined;
+  const col = await mediaAssetsCollection();
+  const doc = await col.findOne({ messageId: new ObjectId(messageId) });
+  if (!doc) return undefined;
+  return { kind: doc.kind, mimeType: doc.mimeType, base64: doc.data.toString("base64") };
+}
+
+// Для Medical Opinion Request — все фото/голосовые пациента по лиду
+// разом, чтобы передать их в Gemini как есть, а не только текстовым
+// плейсхолдером "(+фото)".
+export async function getMediaAssetsForLead(
+  leadId: string
+): Promise<Array<{ messageId: string; kind: "image" | "audio"; mimeType: string; base64: string }>> {
+  if (!ObjectId.isValid(leadId)) return [];
+  const col = await mediaAssetsCollection();
+  const docs = await col.find({ leadId: new ObjectId(leadId) }).sort({ at: 1 }).toArray();
+  return docs.map((doc) => ({
+    messageId: doc.messageId.toString(),
+    kind: doc.kind,
+    mimeType: doc.mimeType,
+    base64: doc.data.toString("base64"),
+  }));
 }
 
 export async function getCaseAssistantMessages(leadId: string): Promise<CaseAssistantMessage[]> {

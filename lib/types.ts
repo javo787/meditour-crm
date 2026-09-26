@@ -48,6 +48,11 @@ export interface ChatMessage {
   from: MessageSender;
   text: string;
   at: string; // ISO datetime
+  // Лёгкий индикатор: тип и mimetype есть тут, сами байты — в отдельной
+  // коллекции MediaAssets (см. lib/db.ts), чтобы getMessages() оставался
+  // быстрым и не тянул бинарные данные там, где нужен только текст
+  // (транскрипт для Medical Opinion Request, извлечение анамнеза и т.п.).
+  media?: { kind: "image" | "audio"; mimeType: string };
 }
 
 // Отдельный тред координатора с ассистентом подготовки Medical Opinion

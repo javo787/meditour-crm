@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { addMessage, createLead, findLeadByPhone, getLead, getMessages, updateLead } from "@/lib/db";
+import { addMessage, createLead, findLeadByPhone, getLead, getMessages, saveMediaAsset, updateLead } from "@/lib/db";
 import { fetchMediaBase64, sendWhatsAppText } from "@/lib/evolution";
 import { askGemini } from "@/lib/gemini";
 import { createLogger, newRequestId, Logger } from "@/lib/logger";
@@ -209,12 +209,39 @@ async function processNewMessage(
   }
 
   // 2) Сохраняем сообщение пациента в историю переписки.
-  await addMessage(
+  const savedMessage = await addMessage(
     lead.id,
     "patient",
-    storedText + (image ? " (+фото)" : "") + (audio ? " (+голосовое)" : "")
+    storedText + (image ? " (+фото)" : "") + (audio ? " (+голосовое)" : ""),
+    image ? { kind: "image", mimeType: image.mimeType } : audio ? { kind: "audio", mimeType: audio.mimeType } : undefined
   );
   log.info("9. сообщение пациента сохранено в историю", { leadId: lead.id, storedTextLength: storedText.length });
+
+  // Раньше на этом фото/голосовое терялось безвозвратно — fetchMediaBase64
+  // доставал их из Evolution только для этого одного ответа Gemini.
+  // Теперь сохраняем реальные байты в MediaAssets, привязанные к
+  // savedMessage.id — координатор увидит их в переписке (chat-panel), а
+  // Medical Opinion Request сможет прочитать сами документы, а не только
+  // текстовую пометку "(+фото)".
+  if (image) {
+    await saveMediaAsset({
+      leadId: lead.id,
+      messageId: savedMessage.id,
+      kind: "image",
+      mimeType: image.mimeType,
+      base64: image.base64,
+    });
+    log.info("9a. фото сохранено в MediaAssets", { leadId: lead.id, messageId: savedMessage.id });
+  } else if (audio) {
+    await saveMediaAsset({
+      leadId: lead.id,
+      messageId: savedMessage.id,
+      kind: "audio",
+      mimeType: audio.mimeType,
+      base64: audio.base64,
+    });
+    log.info("9a. голосовое сохранено в MediaAssets", { leadId: lead.id, messageId: savedMessage.id });
+  }
 
   // 3) Маршрутизатор статусов: если координатор уже взял диалог на себя
   // (aiPaused — тот же флаг, что кнопка «Остановить ИИ» на Этапе 2) — ИИ

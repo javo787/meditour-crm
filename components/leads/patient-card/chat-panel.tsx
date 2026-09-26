@@ -92,31 +92,49 @@ export function ChatPanel({
       <CardContent className="flex flex-1 flex-col gap-3">
         <ScrollArea className="thin-scrollbar h-72 rounded-md border border-border bg-secondary/30 p-3">
           <div className="flex flex-col gap-2.5">
-            {messages.map((m) => (
-              <div
-                key={m.id}
-                className={cn(
-                  "flex flex-col gap-0.5",
-                  m.from === "patient" ? "items-start" : "items-end"
-                )}
-              >
+            {messages.map((m) => {
+              const hasPlaceholderCaption = m.text.startsWith("📎") || m.text.startsWith("🎤");
+              return (
                 <div
+                  key={m.id}
                   className={cn(
-                    "max-w-[85%] rounded-lg px-3 py-2 text-sm",
-                    m.from === "patient" && "bg-card",
-                    m.from === "ai" && "bg-primary/10",
-                    m.from === "coordinator" && "bg-primary text-primary-foreground"
+                    "flex flex-col gap-0.5",
+                    m.from === "patient" ? "items-start" : "items-end"
                   )}
                 >
-                  {m.text}
+                  <div
+                    className={cn(
+                      "max-w-[85%] rounded-lg px-3 py-2 text-sm",
+                      m.from === "patient" && "bg-card",
+                      m.from === "ai" && "bg-primary/10",
+                      m.from === "coordinator" && "bg-primary text-primary-foreground"
+                    )}
+                  >
+                    {m.media?.kind === "image" && (
+                      // eslint-disable-next-line @next/next/no-img-element -- фото пациента произвольного размера во внутренней панели координатора, next/image тут не даёт выгоды
+                      <img
+                        src={`/api/leads/${leadId}/media/${m.id}`}
+                        alt="Фото от пациента"
+                        className="mb-1.5 max-h-64 w-full rounded-md object-contain"
+                      />
+                    )}
+                    {m.media?.kind === "audio" && (
+                      <audio
+                        controls
+                        className="mb-1.5 h-9 max-w-full"
+                        src={`/api/leads/${leadId}/media/${m.id}`}
+                      />
+                    )}
+                    {!(m.media && hasPlaceholderCaption) && m.text}
+                  </div>
+                  <span className="flex items-center gap-1 px-1 text-[11px] text-muted-foreground">
+                    {m.from === "ai" && <Bot className="h-3 w-3" />}
+                    {m.from === "coordinator" && <User className="h-3 w-3" />}
+                    {format(new Date(m.at), "d MMM, HH:mm", { locale: ru })}
+                  </span>
                 </div>
-                <span className="flex items-center gap-1 px-1 text-[11px] text-muted-foreground">
-                  {m.from === "ai" && <Bot className="h-3 w-3" />}
-                  {m.from === "coordinator" && <User className="h-3 w-3" />}
-                  {format(new Date(m.at), "d MMM, HH:mm", { locale: ru })}
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </ScrollArea>
         <form onSubmit={handleSend} className="flex items-end gap-2">

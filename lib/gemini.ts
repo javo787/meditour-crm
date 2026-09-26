@@ -61,6 +61,7 @@ async function callModel(
   contents: any[],
   systemInstruction: string,
   tools: GeminiTools | undefined,
+  cachedContentName: string | undefined,
   logger: any
 ): Promise<
   | { ok: true; res: Response }
@@ -75,7 +76,11 @@ async function callModel(
         headers: { "Content-Type": "application/json", "x-goog-api-key": API_KEY as string },
         body: JSON.stringify({
           contents,
-          systemInstruction: { parts: [{ text: systemInstruction }] },
+          // При использовании explicit cache системную инструкцию в запрос
+          // класть нельзя — она уже часть cachedContent на стороне Google.
+          ...(cachedContentName
+            ? { cachedContent: cachedContentName }
+            : { systemInstruction: { parts: [{ text: systemInstruction }] } }),
           ...(tools ? { tools } : {}),
         }),
       }
@@ -96,6 +101,54 @@ async function callModel(
   return { ok: true, res };
 }
 
+// Explicit context caching (guaranteed экономия, в отличие от implicit —
+// та включена у Google по умолчанию, но без гарантии и требует, чтобы
+// весь запрос перевалил за порог модели в токенах, то есть в коротких
+// диалогах может вообще не сработать). Кэшируем только systemInstruction
+// askGemini — он константный и шлётся на КАЖДОЕ сообщение КАЖДого лида,
+// это самый горячий путь. Кэш привязан к конкретной модели на стороне
+// Google, поэтому создаём его только под MODELS[0] (основную модель) —
+// резервные модели используются редко, ради них не усложняем.
+const PLAYBOOK_CACHE_TTL_SECONDS = 3600;
+let playbookCache: { name: string; expiresAt: number } | null = null;
+
+async function getOrCreatePlaybookCache(logger: any): Promise<string | null> {
+  const now = Date.now();
+  if (playbookCache && playbookCache.expiresAt > now + 60_000) {
+    return playbookCache.name;
+  }
+
+  try {
+    const res = await fetch("https://generativelanguage.googleapis.com/v1beta/cachedContents", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-goog-api-key": API_KEY as string },
+      body: JSON.stringify({
+        model: `models/${MODELS[0]}`,
+        systemInstruction: { parts: [{ text: MEDITUR_SYSTEM_PROMPT }] },
+        ttl: `${PLAYBOOK_CACHE_TTL_SECONDS}s`,
+      }),
+    });
+
+    if (!res.ok) {
+      logger.warn("Gemini: не удалось создать explicit cache для промпта — шлём без кэша", {
+        status: res.status,
+        body: await res.text().catch(() => ""),
+      });
+      return null;
+    }
+
+    const data = await res.json();
+    playbookCache = { name: data.name, expiresAt: now + PLAYBOOK_CACHE_TTL_SECONDS * 1000 };
+    logger.info("Gemini: создан explicit cache для системного промпта", { name: data.name });
+    return playbookCache.name;
+  } catch (err) {
+    logger.warn("Gemini: ошибка при создании explicit cache — шлём без кэша", {
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
 // Общий цикл перебора моделей с ретраями (MODELS x MAX_CYCLES). Используется
 // askGemini, askCaseAssistant и extractAnamnesis — у каждого свой
 // systemInstruction (и опционально свои tools), но сетевые ретраи и парсинг
@@ -106,12 +159,14 @@ async function generateWithFallback(
   contents: any[],
   systemInstruction: string,
   logger: any,
-  options?: { tools?: GeminiTools }
+  options?: { tools?: GeminiTools; cacheable?: boolean }
 ): Promise<{ text: string; functionCall?: GeminiFunctionCall }> {
   if (!API_KEY) {
     logger.error("GEMINI_API_KEY не задан");
     throw new Error("GEMINI_API_KEY не задан — добавьте его в .env.local");
   }
+
+  const cachedContentName = options?.cacheable ? await getOrCreatePlaybookCache(logger) : null;
 
   let lastStatus = 0;
   let lastBody = "";
@@ -119,7 +174,24 @@ async function generateWithFallback(
 
   for (let cycle = 1; cycle <= MAX_CYCLES; cycle++) {
     for (const model of MODELS) {
-      const result = await callModel(model, contents, systemInstruction, options?.tools, logger);
+      // Кэш создан только под MODELS[0] — для остальных моделей (и если
+      // кэш не создался) шлём инструкцию как раньше, инлайном.
+      const useCache = cachedContentName && model === MODELS[0] ? cachedContentName : undefined;
+      let result = await callModel(model, contents, systemInstruction, options?.tools, useCache, logger);
+
+      // Если запрос с кэшем не удался (например, кэш протух или был
+      // удалён на стороне Google раньше TTL) — не сдаёмся и не прыгаем
+      // сразу на следующую модель, а пробуем эту же модель без кэша, с
+      // инструкцией целиком в запросе. Так кэширование в худшем случае
+      // просто не экономит на этом вызове, но никогда не роняет ответ.
+      if (!result.ok && useCache) {
+        logger.warn("Gemini: запрос с cachedContent не удался, пробуем без кэша", {
+          model,
+          status: result.status,
+        });
+        result = await callModel(model, contents, systemInstruction, options?.tools, undefined, logger);
+      }
+
       if (result.ok) {
         res = result.res;
         break;
@@ -177,6 +249,7 @@ async function generateWithFallback(
     blockReason,
     replyLength: text.length,
     functionCall: functionCall?.name,
+    cacheHitTokens: data?.usageMetadata?.cachedContentTokenCount,
   });
 
   if (!text && !functionCall) {
@@ -245,6 +318,7 @@ export async function askGemini(params: {
 
   const { text, functionCall } = await generateWithFallback(contents, MEDITUR_SYSTEM_PROMPT, logger, {
     tools: [{ functionDeclarations: [PAUSE_FUNCTION_DECLARATION] }],
+    cacheable: true,
   });
 
   const shouldPause = functionCall?.name === "pauseForHumanHandoff";
@@ -269,14 +343,32 @@ export async function askGemini(params: {
 export async function askCaseAssistant(params: {
   history: Array<{ role: "user" | "assistant"; text: string }>;
   leadContext?: string;
+  media?: Array<{ mimeType: string; base64: string }>;
   requestId?: string;
 }): Promise<string> {
   const logger = params.requestId ? log.child(params.requestId) : log;
 
-  const contents = params.history.map((m) => ({
-    role: m.role === "assistant" ? "model" : "user",
-    parts: [{ text: m.text }] as GeminiPart[],
-  }));
+  const contents: any[] = [];
+
+  // Реальные фото/голосовые, которые пациент прислал в WhatsApp (теперь
+  // кэшируются в MediaAssets, см. lib/db.ts) — отдельным сообщением перед
+  // историей чата с координатором, а не подмешаны в systemInstruction
+  // (там может быть только текст).
+  if (params.media && params.media.length > 0) {
+    contents.push({
+      role: "user",
+      parts: params.media.map((m) => ({
+        inlineData: { mimeType: m.mimeType, data: m.base64 },
+      })) as GeminiPart[],
+    });
+  }
+
+  contents.push(
+    ...params.history.map((m) => ({
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: m.text }] as GeminiPart[],
+    }))
+  );
 
   const systemInstruction = params.leadContext
     ? `${MEDICAL_OPINION_SYSTEM_PROMPT}\n\n# CASE DATA ALREADY ON FILE IN THE CRM\nUse this instead of asking the coordinator to repeat it. Treat anything the coordinator types below as additional or corrected information layered on top of this.\n${params.leadContext}`
@@ -285,6 +377,7 @@ export async function askCaseAssistant(params: {
   logger.info("askCaseAssistant: отправка запроса", {
     models: MODELS,
     historyMessages: params.history.length,
+    mediaCount: params.media?.length ?? 0,
   });
 
   const { text } = await generateWithFallback(contents, systemInstruction, logger);
