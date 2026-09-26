@@ -24,16 +24,43 @@ const API_KEY = process.env.GEMINI_API_KEY;
 interface GeminiPart {
   text?: string;
   inlineData?: { mimeType: string; data: string };
+  functionCall?: { name: string; args: Record<string, unknown> };
 }
+
+interface GeminiFunctionDeclaration {
+  name: string;
+  description: string;
+  parameters: { type: "object"; properties: Record<string, unknown>; required?: string[] };
+}
+
+interface GeminiFunctionCall {
+  name: string;
+  args: Record<string, unknown>;
+}
+
+type GeminiTools = Array<{ functionDeclarations: GeminiFunctionDeclaration[] }>;
 
 function roleFor(from: ChatMessage["from"]): "user" | "model" {
   return from === "ai" ? "model" : "user";
 }
 
+// Единственная функция, которую пока может вызвать WhatsApp-бот — сигнал
+// "передаю диалог координатору" (см. lib/playbook.ts, СБОР ДОКУМЕНТОВ И
+// ПЕРЕДАЧА КООРДИНАТОРУ + КОГДА ПЕРЕДАВАТЬ ЧЕЛОВЕКУ). Описание намеренно
+// строгое, с отрицательными примерами — свободный AUTO-режим вызова функций
+// иначе легко начинает срабатывать слишком охотно.
+const PAUSE_FUNCTION_DECLARATION: GeminiFunctionDeclaration = {
+  name: "pauseForHumanHandoff",
+  description:
+    "Call this together with your final message ONLY in exactly two situations, never speculatively and never as a default way to end a message. (1) You just told the patient you are passing along the medical documents/history they shared to the Indian doctors and will get back to them once there's a reply — call this only once the patient has actually shared what they have (not while you are still asking questions or waiting for something from them). (2) You are handing off per the playbook's КОГДА ПЕРЕДАВАТЬ ЧЕЛОВЕКУ rule (sensitive topic, patient explicitly asked for a human, patient is upset, or the request is outside this playbook). Do not call it because the conversation is quiet, because you are unsure how to answer, or for any reason other than these two.",
+  parameters: { type: "object", properties: {} },
+};
+
 async function callModel(
   model: string,
   contents: any[],
   systemInstruction: string,
+  tools: GeminiTools | undefined,
   logger: any
 ): Promise<
   | { ok: true; res: Response }
@@ -49,6 +76,7 @@ async function callModel(
         body: JSON.stringify({
           contents,
           systemInstruction: { parts: [{ text: systemInstruction }] },
+          ...(tools ? { tools } : {}),
         }),
       }
     );
@@ -68,17 +96,18 @@ async function callModel(
   return { ok: true, res };
 }
 
-// Общий цикл перебора моделей с ретраями (MODELS x MAX_CYCLES). Вынесен из
-// askGemini, чтобы им мог пользоваться и askCaseAssistant — у каждого свой
-// systemInstruction, но сетевые ретраи и парсинг ответа одинаковые. В
-// отличие от старого askGemini, здесь НЕТ запасной фразы при пустом
-// ответе — это решает вызывающая сторона (для пациента в WhatsApp это
-// извинение, для координатора в Medical Opinion Request — ошибка и повтор).
+// Общий цикл перебора моделей с ретраями (MODELS x MAX_CYCLES). Используется
+// askGemini, askCaseAssistant и extractAnamnesis — у каждого свой
+// systemInstruction (и опционально свои tools), но сетевые ретраи и парсинг
+// ответа одинаковые. Возвращает и text, и functionCall (если модель его
+// вызвала) — при пустом тексте НЕ подставляет запасную фразу, это решает
+// вызывающая сторона.
 async function generateWithFallback(
   contents: any[],
   systemInstruction: string,
-  logger: any
-): Promise<string> {
+  logger: any,
+  options?: { tools?: GeminiTools }
+): Promise<{ text: string; functionCall?: GeminiFunctionCall }> {
   if (!API_KEY) {
     logger.error("GEMINI_API_KEY не задан");
     throw new Error("GEMINI_API_KEY не задан — добавьте его в .env.local");
@@ -90,7 +119,7 @@ async function generateWithFallback(
 
   for (let cycle = 1; cycle <= MAX_CYCLES; cycle++) {
     for (const model of MODELS) {
-      const result = await callModel(model, contents, systemInstruction, logger);
+      const result = await callModel(model, contents, systemInstruction, options?.tools, logger);
       if (result.ok) {
         res = result.res;
         break;
@@ -135,23 +164,26 @@ async function generateWithFallback(
   const data = await res.json();
   const finishReason = data?.candidates?.[0]?.finishReason;
   const blockReason = data?.promptFeedback?.blockReason;
-  const text = (data?.candidates?.[0]?.content?.parts ?? [])
-    .map((p: GeminiPart) => p.text ?? "")
+  const parts: GeminiPart[] = data?.candidates?.[0]?.content?.parts ?? [];
+  const text = parts
+    .map((p) => p.text ?? "")
     .join("")
     .trim();
+  const functionCall = parts.find((p) => p.functionCall)?.functionCall;
 
   logger.info("Gemini: ответ получен", {
     status: res.status,
     finishReason,
     blockReason,
     replyLength: text.length,
+    functionCall: functionCall?.name,
   });
 
-  if (!text) {
+  if (!text && !functionCall) {
     logger.warn("Gemini: пустой ответ от модели", { finishReason, blockReason });
   }
 
-  return text;
+  return { text, functionCall };
 }
 
 export async function askGemini(params: {
@@ -162,7 +194,7 @@ export async function askGemini(params: {
     audio?: { base64: string; mimeType: string };
   }>;
   requestId?: string;
-}): Promise<string> {
+}): Promise<{ text: string; shouldPause: boolean }> {
   const logger = params.requestId ? log.child(params.requestId) : log;
 
   const contents = params.history.map((m) => ({
@@ -211,11 +243,22 @@ export async function askGemini(params: {
     totalTextLength,
   });
 
-  const text = await generateWithFallback(contents, MEDITUR_SYSTEM_PROMPT, logger);
+  const { text, functionCall } = await generateWithFallback(contents, MEDITUR_SYSTEM_PROMPT, logger, {
+    tools: [{ functionDeclarations: [PAUSE_FUNCTION_DECLARATION] }],
+  });
+
+  const shouldPause = functionCall?.name === "pauseForHumanHandoff";
+  if (shouldPause) {
+    logger.info("askGemini: модель вызвала pauseForHumanHandoff — передаём диалог координатору");
+  }
   if (!text) {
     logger.warn("askGemini: используется запасная фраза для пациента");
   }
-  return text || "Извините, не получилось сформировать ответ — уточните, пожалуйста, вопрос.";
+
+  return {
+    text: text || "Извините, не получилось сформировать ответ — уточните, пожалуйста, вопрос.",
+    shouldPause,
+  };
 }
 
 // Ассистент подготовки Medical Opinion Request (Этап 4). Промпт — в
@@ -244,7 +287,7 @@ export async function askCaseAssistant(params: {
     historyMessages: params.history.length,
   });
 
-  const text = await generateWithFallback(contents, systemInstruction, logger);
+  const { text } = await generateWithFallback(contents, systemInstruction, logger);
   if (!text) {
     throw new Error("Gemini вернул пустой ответ для Medical Opinion Request");
   }
@@ -273,7 +316,7 @@ export async function extractAnamnesis(params: {
 
   logger.info("extractAnamnesis: отправка запроса", { models: MODELS });
 
-  const text = await generateWithFallback(contents, ANAMNESIS_EXTRACTION_PROMPT, logger);
+  const { text } = await generateWithFallback(contents, ANAMNESIS_EXTRACTION_PROMPT, logger);
   if (!text) {
     throw new Error("Gemini вернул пустой ответ при извлечении анамнеза");
   }

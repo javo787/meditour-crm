@@ -298,12 +298,12 @@ async function processBatch(leadId: string, phone: string) {
       olderHistoryMessages: olderHistory.length,
     });
 
-    const reply = await askGemini({
+    const { text: reply, shouldPause } = await askGemini({
       history: olderHistory,
       items,
       requestId,
     });
-    log.info("processBatch: Gemini вернул ответ", { leadId, replyLength: reply.length });
+    log.info("processBatch: Gemini вернул ответ", { leadId, replyLength: reply.length, shouldPause });
 
     await addMessage(leadId, "ai", reply);
     log.info("processBatch: ответ ИИ сохранён в историю", { leadId });
@@ -314,6 +314,16 @@ async function processBatch(leadId: string, phone: string) {
     if (lead.stage === "new") {
       await updateLead(leadId, { stage: "first_contact" });
       log.info("processBatch: статус лида обновлён new → first_contact", { leadId });
+    }
+
+    // Модель сама решает, когда передать диалог координатору — обычно
+    // сразу после сбора документов (см. lib/playbook.ts). До этого coordinator
+    // ставил aiPaused только вручную; теперь ИИ может сделать это сам, тем же
+    // флагом, которым уже управляет вся остальная логика (webhook, chat-panel).
+    if (shouldPause) {
+      await updateLead(leadId, { aiPaused: true });
+      await addMessage(leadId, "ai", "— ИИ автоматически поставлен на паузу —");
+      log.info("processBatch: ИИ поставлен на паузу автоматически (pauseForHumanHandoff)", { leadId });
     }
   } catch (err) {
     // Messages are already safely in history either way, so a failure here should log and stop.
