@@ -250,3 +250,54 @@ export async function askCaseAssistant(params: {
   }
   return text;
 }
+
+const ANAMNESIS_EXTRACTION_PROMPT = `You extract structured intake data for a medical-tourism coordinator from a WhatsApp conversation transcript between their AI/coordinator ("Meditour") and a patient.
+
+Read the whole transcript and output ONLY a single valid JSON object — no markdown code fences, no commentary before or after it. Shape:
+{"age": number or null, "proceduresDone": array of short strings (past surgeries/procedures already done — empty array if none mentioned), "summary": a 2-4 sentence case summary written in Russian, for the coordinator's own dashboard}
+
+If the transcript does not mention a fact, use null (for age) or an empty array (for proceduresDone) — never invent details that were not actually said in the conversation.`;
+
+// Извлечение структурированного анамнеза (age/proceduresDone/summary) из
+// переписки с пациентом — раньше Anamnesis заполнялся только один раз при
+// createLead и никогда не обновлялся, хотя AnamnesisPanel обещал, что "ИИ
+// соберёт данные в переписке". Вызывается по кнопке из
+// app/api/leads/[id]/anamnesis, не на каждое входящее сообщение (иначе
+// удваивали бы стоимость и задержку каждого ответа пациенту).
+export async function extractAnamnesis(params: {
+  transcript: string;
+  requestId?: string;
+}): Promise<{ age: number | null; proceduresDone: string[]; summary: string }> {
+  const logger = params.requestId ? log.child(params.requestId) : log;
+  const contents = [{ role: "user", parts: [{ text: params.transcript }] as GeminiPart[] }];
+
+  logger.info("extractAnamnesis: отправка запроса", { models: MODELS });
+
+  const text = await generateWithFallback(contents, ANAMNESIS_EXTRACTION_PROMPT, logger);
+  if (!text) {
+    throw new Error("Gemini вернул пустой ответ при извлечении анамнеза");
+  }
+
+  const cleaned = text
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
+
+  try {
+    const parsed = JSON.parse(cleaned);
+    return {
+      age: typeof parsed.age === "number" ? parsed.age : null,
+      proceduresDone: Array.isArray(parsed.proceduresDone)
+        ? parsed.proceduresDone.filter((p: unknown): p is string => typeof p === "string")
+        : [],
+      summary: typeof parsed.summary === "string" ? parsed.summary : "",
+    };
+  } catch (err) {
+    logger.error("extractAnamnesis: не удалось разобрать JSON от Gemini", {
+      message: err instanceof Error ? err.message : String(err),
+      raw: text.slice(0, 500),
+    });
+    throw new Error("Gemini вернул невалидный JSON при извлечении анамнеза");
+  }
+}

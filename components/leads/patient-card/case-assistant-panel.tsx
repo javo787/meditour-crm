@@ -70,9 +70,12 @@ export function CaseAssistantPanel({
       <CardContent className="flex flex-col gap-3">
         {messages.length === 0 ? (
           <p className="rounded-md border border-dashed border-border p-3 text-xs text-muted-foreground">
-            Вставьте выписку, анамнез или другие документы по пациенту — соберу
-            запрос на английском по формату Meditour. Если что-то не так,
-            напишите сюда же, что поправить, и пришлю обновлённую версию.
+            Уже вижу переписку с пациентом в WhatsApp и учту всё, что там
+            написано текстом. Фото и голосовые из этого чата не вижу — они
+            нигде не сохраняются, — так что если там пересылали документы
+            или выписки, вставьте их текст сюда сами. Если в готовом
+            запросе что-то не так, напишите здесь, что поправить, и пришлю
+            новую версию.
           </p>
         ) : (
           <ScrollArea className="thin-scrollbar h-96 rounded-md border border-border bg-secondary/30 p-3">

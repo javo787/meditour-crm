@@ -215,6 +215,7 @@ export async function updateLead(
       | "homeLocation"
       | "estimateSentAt"
       | "followUpStep"
+      | "anamnesis"
     >
   >
 ): Promise<Lead | undefined> {
