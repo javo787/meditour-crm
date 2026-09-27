@@ -437,3 +437,26 @@ export async function extractAnamnesis(params: {
     throw new Error("Gemini вернул невалидный JSON при извлечении анамнеза");
   }
 }
+
+// Быстрая проверка "жив ли ИИ" для страницы настроек — прямой минимальный
+// запрос к основной модели, в обход ретраев/фолбэка/кэша (тут не нужна
+// экономия, нужен быстрый однозначный да/нет) и с таймаутом, чтобы страница
+// настроек не зависала, если провайдер не отвечает. Никогда не бросает
+// ошибку и не возвращает никаких деталей — только true/false.
+export async function checkGeminiHealth(): Promise<boolean> {
+  if (!API_KEY) return false;
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${MODELS[0]}:generateContent`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": API_KEY },
+        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "ping" }] }] }),
+        signal: AbortSignal.timeout(10_000),
+      }
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}

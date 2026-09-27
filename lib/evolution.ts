@@ -92,3 +92,24 @@ export async function fetchMediaBase64(
   });
   return { base64: data.base64, mimetype: data.mimetype };
 }
+
+// Для страницы настроек: не просто "сервер отвечает", а реально ли сессия
+// WhatsApp подключена (state === "open") — сервер Evolution может быть жив,
+// а сессия при этом разлогинена и ждёт новый QR. Никогда не бросает ошибку
+// и не возвращает деталей — только true/false, с таймаутом на случай
+// зависшего шлюза.
+export async function checkWhatsAppConnection(): Promise<boolean> {
+  try {
+    const { baseUrl, apiKey, instance } = getConfig();
+    const res = await fetch(`${baseUrl}/instance/connectionState/${instance}`, {
+      method: "GET",
+      headers: { apikey: apiKey },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    return data?.instance?.state === "open";
+  } catch {
+    return false;
+  }
+}
