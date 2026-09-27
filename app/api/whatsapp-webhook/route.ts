@@ -222,25 +222,35 @@ async function processNewMessage(
   // Теперь сохраняем реальные байты в MediaAssets, привязанные к
   // savedMessage.id — координатор увидит их в переписке (chat-panel), а
   // Medical Opinion Request сможет прочитать сами документы, а не только
-  // текстовую пометку "(+фото)".
-  if (image) {
-    await saveMediaAsset({
+  // текстовую пометку "(+фото)". Обёрнуто в try/catch: ошибка записи сюда
+  // не должна ломать ответ пациенту — в худшем случае просто не сохранится
+  // копия медиа, как и было раньше.
+  try {
+    if (image) {
+      await saveMediaAsset({
+        leadId: lead.id,
+        messageId: savedMessage.id,
+        kind: "image",
+        mimeType: image.mimeType,
+        base64: image.base64,
+      });
+      log.info("9a. фото сохранено в MediaAssets", { leadId: lead.id, messageId: savedMessage.id });
+    } else if (audio) {
+      await saveMediaAsset({
+        leadId: lead.id,
+        messageId: savedMessage.id,
+        kind: "audio",
+        mimeType: audio.mimeType,
+        base64: audio.base64,
+      });
+      log.info("9a. голосовое сохранено в MediaAssets", { leadId: lead.id, messageId: savedMessage.id });
+    }
+  } catch (err) {
+    log.error("9a. не удалось сохранить медиа в MediaAssets — продолжаем без сохранения копии", {
       leadId: lead.id,
       messageId: savedMessage.id,
-      kind: "image",
-      mimeType: image.mimeType,
-      base64: image.base64,
+      message: err instanceof Error ? err.message : String(err),
     });
-    log.info("9a. фото сохранено в MediaAssets", { leadId: lead.id, messageId: savedMessage.id });
-  } else if (audio) {
-    await saveMediaAsset({
-      leadId: lead.id,
-      messageId: savedMessage.id,
-      kind: "audio",
-      mimeType: audio.mimeType,
-      base64: audio.base64,
-    });
-    log.info("9a. голосовое сохранено в MediaAssets", { leadId: lead.id, messageId: savedMessage.id });
   }
 
   // 3) Маршрутизатор статусов: если координатор уже взял диалог на себя

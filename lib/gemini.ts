@@ -30,7 +30,12 @@ interface GeminiPart {
 interface GeminiFunctionDeclaration {
   name: string;
   description: string;
-  parameters: { type: "object"; properties: Record<string, unknown>; required?: string[] };
+  // Gemini's Schema.type is an UPPERCASE enum (OBJECT/STRING/...), not
+  // lowercase JSON-Schema style — get this wrong and Google returns 400 on
+  // every request that includes tools. For a no-argument function it's
+  // simplest and safest to just omit parameters (Google's own docs: "for a
+  // function with no parameters, this can be left unset").
+  parameters?: { type: "OBJECT"; properties: Record<string, unknown>; required?: string[] };
 }
 
 interface GeminiFunctionCall {
@@ -53,7 +58,6 @@ const PAUSE_FUNCTION_DECLARATION: GeminiFunctionDeclaration = {
   name: "pauseForHumanHandoff",
   description:
     "Call this together with your final message ONLY in exactly two situations, never speculatively and never as a default way to end a message. (1) You just told the patient you are passing along the medical documents/history they shared to the Indian doctors and will get back to them once there's a reply — call this only once the patient has actually shared what they have (not while you are still asking questions or waiting for something from them). (2) You are handing off per the playbook's КОГДА ПЕРЕДАВАТЬ ЧЕЛОВЕКУ rule (sensitive topic, patient explicitly asked for a human, patient is upset, or the request is outside this playbook). Do not call it because the conversation is quiet, because you are unsure how to answer, or for any reason other than these two.",
-  parameters: { type: "object", properties: {} },
 };
 
 async function callModel(
@@ -190,6 +194,19 @@ async function generateWithFallback(
           status: result.status,
         });
         result = await callModel(model, contents, systemInstruction, options?.tools, undefined, logger);
+      }
+
+      // Та же логика для tools: если запрос с функциями не удался (например,
+      // из-за ошибки в схеме — именно так однажды упал вообще весь ответ
+      // пациентам), пробуем без них. Потерять на этом ответе
+      // pauseForHumanHandoff — не страшно, а вот отвечать пациенту вообще
+      // нечем — критично.
+      if (!result.ok && options?.tools) {
+        logger.warn("Gemini: запрос с tools не удался, пробуем без функций", {
+          model,
+          status: result.status,
+        });
+        result = await callModel(model, contents, systemInstruction, undefined, undefined, logger);
       }
 
       if (result.ok) {
@@ -438,25 +455,49 @@ export async function extractAnamnesis(params: {
   }
 }
 
-// Быстрая проверка "жив ли ИИ" для страницы настроек — прямой минимальный
-// запрос к основной модели, в обход ретраев/фолбэка/кэша (тут не нужна
-// экономия, нужен быстрый однозначный да/нет) и с таймаутом, чтобы страница
-// настроек не зависала, если провайдер не отвечает. Никогда не бросает
-// ошибку и не возвращает никаких деталей — только true/false.
-export async function checkGeminiHealth(): Promise<boolean> {
-  if (!API_KEY) return false;
-  try {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODELS[0]}:generateContent`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": API_KEY },
-        body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "ping" }] }] }),
-        signal: AbortSignal.timeout(10_000),
-      }
-    );
-    return res.ok;
-  } catch {
+// Быстрая проверка "жив ли ИИ" для страницы настроек. Пробует каждую
+// модель из MODELS по очереди (как и реальные запросы через
+// generateWithFallback) — раньше проверялась только основная модель без
+// фолбэка, из-за чего статус мог показывать "не работает", хотя резервная
+// модель прекрасно отвечала (именно так и было: extractAnamnesis работал,
+// а статус — нет). В обход ретраев/кэша/tools — тут не нужна экономия,
+// нужен быстрый и точный да/нет, с таймаутом на каждую попытку, чтобы
+// страница настроек не зависала.
+export async function checkGeminiHealth(requestId?: string): Promise<boolean> {
+  const logger = requestId ? log.child(requestId) : log;
+  if (!API_KEY) {
+    logger.warn("checkGeminiHealth: GEMINI_API_KEY не задан");
     return false;
   }
+
+  for (const model of MODELS) {
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": API_KEY },
+          body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: "ping" }] }] }),
+          signal: AbortSignal.timeout(10_000),
+        }
+      );
+      if (res.ok) {
+        logger.info("checkGeminiHealth: модель ответила успешно", { model });
+        return true;
+      }
+      logger.warn("checkGeminiHealth: модель вернула ошибку", {
+        model,
+        status: res.status,
+        body: (await res.text().catch(() => "")).slice(0, 300),
+      });
+    } catch (err) {
+      logger.warn("checkGeminiHealth: сетевая ошибка при проверке модели", {
+        model,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  logger.error("checkGeminiHealth: ни одна модель не ответила");
+  return false;
 }

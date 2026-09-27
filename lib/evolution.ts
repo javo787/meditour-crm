@@ -98,7 +98,8 @@ export async function fetchMediaBase64(
 // а сессия при этом разлогинена и ждёт новый QR. Никогда не бросает ошибку
 // и не возвращает деталей — только true/false, с таймаутом на случай
 // зависшего шлюза.
-export async function checkWhatsAppConnection(): Promise<boolean> {
+export async function checkWhatsAppConnection(requestId?: string): Promise<boolean> {
+  const logger = requestId ? log.child(requestId) : log;
   try {
     const { baseUrl, apiKey, instance } = getConfig();
     const res = await fetch(`${baseUrl}/instance/connectionState/${instance}`, {
@@ -106,10 +107,23 @@ export async function checkWhatsAppConnection(): Promise<boolean> {
       headers: { apikey: apiKey },
       signal: AbortSignal.timeout(10_000),
     });
-    if (!res.ok) return false;
+    if (!res.ok) {
+      logger.warn("checkWhatsAppConnection: шлюз ответил ошибкой", {
+        status: res.status,
+        body: (await res.text().catch(() => "")).slice(0, 300),
+      });
+      return false;
+    }
     const data = await res.json();
-    return data?.instance?.state === "open";
-  } catch {
+    const state = data?.instance?.state;
+    if (state !== "open") {
+      logger.warn("checkWhatsAppConnection: сессия не подключена", { state });
+    }
+    return state === "open";
+  } catch (err) {
+    logger.warn("checkWhatsAppConnection: ошибка при проверке", {
+      message: err instanceof Error ? err.message : String(err),
+    });
     return false;
   }
 }
