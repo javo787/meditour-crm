@@ -131,6 +131,9 @@ export function ChatPanel({
                     {m.from === "ai" && <Bot className="h-3 w-3" />}
                     {m.from === "coordinator" && <User className="h-3 w-3" />}
                     {format(new Date(m.at), "d MMM, HH:mm", { locale: ru })}
+                    {m.deliveryFailed && (
+                      <span className="font-medium text-destructive">· не доставлено</span>
+                    )}
                   </span>
                 </div>
               );

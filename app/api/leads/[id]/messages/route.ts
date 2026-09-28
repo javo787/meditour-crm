@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { addMessage, getLead, getMessages } from "@/lib/db";
+import { addMessage, getLead, getMessages, markMessageDeliveryFailed } from "@/lib/db";
 import { sendWhatsAppText } from "@/lib/evolution";
 import { createLogger, newRequestId } from "@/lib/logger";
 
@@ -60,10 +60,13 @@ export async function POST(
       phone: lead.phone,
       message: err instanceof Error ? err.message : String(err),
     });
+    // Без пометки такое сообщение после перезагрузки страницы выглядело бы
+    // как доставленное.
+    await markMessageDeliveryFailed(message.id).catch(() => undefined);
     return NextResponse.json(
       {
-        message,
-        error: "Сообщение сохранено, но не доставлено в WhatsApp — проверьте Evolution API",
+        message: { ...message, deliveryFailed: true },
+        error: "Сообщение сохранено, но не доставлено в WhatsApp — проверьте подключение",
       },
       { status: 502 }
     );

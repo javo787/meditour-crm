@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2, RefreshCw, XCircle } from "lucide-react";
+import { formatDistanceToNow } from "date-fns";
+import { ru } from "date-fns/locale";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,6 +11,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 interface StatusResponse {
   ai: boolean;
   whatsapp: boolean;
+  lastInboundAt: string | null;
+  failedDeliveries24h: number;
   checkedAt: string;
 }
 
@@ -72,9 +76,29 @@ export function PlatformStatusPanel() {
         <StatusRow label="ИИ-ассистент" online={status ? status.ai : null} />
         <StatusRow label="WhatsApp" online={status ? status.whatsapp : null} />
         {status && (
-          <p className="mt-1 text-xs text-muted-foreground">
-            Обновлено: {new Date(status.checkedAt).toLocaleTimeString("ru-RU")}
-          </p>
+          <>
+            <p className="px-1 text-xs text-muted-foreground">
+              «WhatsApp: Работает» означает только, что канал не отключён — не то, что сообщения
+              реально доходят до пациентов. Смотрите строки ниже.
+            </p>
+            <div className="flex items-center justify-between px-1 text-xs">
+              <span className="text-muted-foreground">Последнее сообщение от пациента</span>
+              <span className="font-medium">
+                {status.lastInboundAt
+                  ? formatDistanceToNow(new Date(status.lastInboundAt), { addSuffix: true, locale: ru })
+                  : "ещё не было"}
+              </span>
+            </div>
+            <div className="flex items-center justify-between px-1 text-xs">
+              <span className="text-muted-foreground">Недоставленных ответов за 24ч</span>
+              <span className={`font-medium ${status.failedDeliveries24h > 0 ? "text-destructive" : ""}`}>
+                {status.failedDeliveries24h}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Обновлено: {new Date(status.checkedAt).toLocaleTimeString("ru-RU")}
+            </p>
+          </>
         )}
       </CardContent>
     </Card>

@@ -37,6 +37,7 @@ interface MessageDoc {
   text: string;
   at: string;
   media?: { kind: "image" | "audio"; mimeType: string };
+  deliveryFailed?: boolean;
 }
 
 // Отдельная коллекция от Messages: это переписка координатора с
@@ -115,6 +116,7 @@ function toMessage(doc: MessageDoc): ChatMessage {
     text: doc.text,
     at: doc.at,
     media: doc.media,
+    deliveryFailed: doc.deliveryFailed,
   };
 }
 
@@ -279,6 +281,30 @@ export async function addMessage(
 
   const result = await col.insertOne(doc as MessageDoc);
   return toMessage({ _id: result.insertedId, ...doc });
+}
+
+// Пометка "не доставлено" — ставится, когда сообщение уже лежит в истории,
+// а отправка в WhatsApp упала (см. processBatch в вебхуке и роут
+// /api/leads/[id]/messages).
+export async function markMessageDeliveryFailed(messageId: string): Promise<void> {
+  if (!ObjectId.isValid(messageId)) return;
+  const col = await messagesCollection();
+  await col.updateOne({ _id: new ObjectId(messageId) }, { $set: { deliveryFailed: true } });
+}
+
+// Для страницы настроек: когда последний раз пациент писал нам и сколько
+// ответов не удалось доставить за сутки. "Connected" у шлюза WhatsApp
+// говорит только о сохранённом состоянии сессии, а не о том, что сообщения
+// реально идут — эти два числа показывают реальную картину.
+export async function getWhatsAppActivity(): Promise<{
+  lastInboundAt: string | null;
+  failedDeliveries24h: number;
+}> {
+  const col = await messagesCollection();
+  const last = await col.find({ from: "patient" }).sort({ at: -1 }).limit(1).next();
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const failedDeliveries24h = await col.countDocuments({ deliveryFailed: true, at: { $gte: since } });
+  return { lastInboundAt: last?.at ?? null, failedDeliveries24h };
 }
 
 // Сохраняет реальные байты (после того как сообщение уже создано через

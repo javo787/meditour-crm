@@ -1,9 +1,19 @@
 import { NextResponse } from "next/server";
 
-import { addMessage, createLead, findLeadByPhone, getLead, getMessages, saveMediaAsset, updateLead } from "@/lib/db";
+import {
+  addMessage,
+  createLead,
+  findLeadByPhone,
+  getLead,
+  getMessages,
+  markMessageDeliveryFailed,
+  saveMediaAsset,
+  updateLead,
+} from "@/lib/db";
 import { fetchMediaBase64, sendWhatsAppText } from "@/lib/evolution";
 import { askGemini } from "@/lib/gemini";
 import { createLogger, newRequestId, Logger } from "@/lib/logger";
+import { resolveWhatsAppJid } from "@/lib/whatsapp-jid";
 
 export const dynamic = "force-dynamic";
 
@@ -30,7 +40,10 @@ interface EvolutionWebhookBody {
   event?: string;
   apikey?: string;
   data?: {
-    key?: { remoteJid?: string; fromMe?: boolean; id?: string };
+    // remoteJidAlt/senderPn: когда remoteJid — скрытый идентификатор @lid,
+    // настоящий номер приходит здесь (см. lib/whatsapp-jid.ts).
+    key?: { remoteJid?: string; remoteJidAlt?: string; senderPn?: string; fromMe?: boolean; id?: string };
+    senderPn?: string;
     pushName?: string;
     messageType?: string;
     message?: {
@@ -48,12 +61,6 @@ function isAuthentic(body: EvolutionWebhookBody): boolean {
   const expected = process.env.EVOLUTION_API_KEY;
   if (!expected) return true; // ключ ещё не настроен — не блокируем локальную разработку
   return body.apikey === expected;
-}
-
-function extractPhone(remoteJid: string | undefined): string | null {
-  if (!remoteJid) return null;
-  const [id] = remoteJid.split("@");
-  return id || null;
 }
 
 async function parseAndValidateWebhook(request: Request, log: Logger) {
@@ -75,6 +82,7 @@ async function parseAndValidateWebhook(request: Request, log: Logger) {
     hasApikey: Boolean(body.apikey),
     messageType: body.data?.messageType,
     remoteJid: body.data?.key?.remoteJid,
+    remoteJidAlt: body.data?.key?.remoteJidAlt,
     fromMe: body.data?.key?.fromMe,
   });
 
@@ -106,14 +114,39 @@ async function parseAndValidateWebhook(request: Request, log: Logger) {
   }
   log.info("5. это входящее сообщение от пациента (не эхо)");
 
-  const phone = extractPhone(key.remoteJid);
-  if (!phone) {
-    log.warn("6. не удалось извлечь номер телефона из remoteJid", { remoteJid: key.remoteJid });
-    return { earlyResponse: NextResponse.json({ ok: true, skipped: "no-phone" }) };
-  }
-  log.info("6. номер телефона извлечён", { phone });
+  const resolved = resolveWhatsAppJid({
+    remoteJid: key.remoteJid,
+    remoteJidAlt: key.remoteJidAlt,
+    senderPn: key.senderPn ?? data?.senderPn,
+  });
 
-  return { body, phone };
+  if (resolved.kind === "ignore") {
+    // Группы/рассылки/статусы и мусорные JID — не пациенты. Раньше из
+    // любого JID брались "цифры до @" и на группу заводился лид.
+    log.info("6. чат пропущен — это не личная переписка с пациентом", {
+      reason: resolved.reason,
+      remoteJid: key.remoteJid,
+    });
+    return { earlyResponse: NextResponse.json({ ok: true, skipped: resolved.reason }) };
+  }
+
+  if (resolved.kind === "lid") {
+    // Ищите в логах Render по "@lid": если такие строки пошли — WhatsApp
+    // скрывает номера (типично для Business), а Evolution не передал
+    // remoteJidAlt. Ответ на такой JID может не уйти — тогда сработает
+    // защита от недоставленных ответов в processBatch (пауза ИИ + пометка).
+    log.warn("6. WhatsApp прислал скрытый идентификатор (@lid) без номера телефона", {
+      remoteJid: key.remoteJid,
+    });
+    return { body, phone: resolved.replyTo };
+  }
+
+  if (key.remoteJid?.endsWith("@lid")) {
+    log.info("6. @lid раскрыт до настоящего номера через remoteJidAlt/senderPn", { phone: resolved.phone });
+  } else {
+    log.info("6. номер телефона извлечён", { phone: resolved.phone });
+  }
+  return { body, phone: resolved.phone };
 }
 
 async function extractMessageContent(
@@ -198,7 +231,7 @@ async function processNewMessage(
   if (!lead) {
     log.info("8. лид с таким номером не найден — создаём новый", { phone, pushName: data?.pushName });
     lead = await createLead({
-      name: data?.pushName || phone,
+      name: data?.pushName || (phone.endsWith("@lid") ? "Контакт WhatsApp (номер скрыт)" : phone),
       phone,
       stage: "new",
       source: "WhatsApp",
@@ -301,10 +334,28 @@ export async function POST(request: Request) {
   return await processNewMessage(phone, data, text, storedText, image, audio, log);
 }
 
-async function processBatch(leadId: string, phone: string) {
-  const requestId = newRequestId();
-  const log = baseLog.child(requestId);
+// Системные пометки в переписке ("— ИИ поставлен на паузу —" и т.п.) — это
+// не реплики диалога, в контекст Gemini они не должны попадать.
+function isSystemNote(text: string): boolean {
+  return text.startsWith("— ") && text.endsWith(" —");
+}
 
+async function addSystemNote(leadId: string, text: string, log: Logger) {
+  try {
+    await addMessage(leadId, "ai", text);
+  } catch (err) {
+    log.error("не удалось записать системную пометку в переписку", {
+      leadId,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+// Сама обработка вынесена отдельно, а processBatch ниже — тонкая обёртка с
+// общим try/catch: эта функция вызывается из setTimeout, и любое
+// необработанное исключение там — это unhandled rejection без единого
+// следа для координатора.
+async function processBatchInner(leadId: string, phone: string, log: Logger, requestId: string) {
   const batch = pendingBatches.get(leadId);
   if (!batch) return;
 
@@ -324,8 +375,14 @@ async function processBatch(leadId: string, phone: string) {
     return;
   }
 
+  // 1) Ответ ИИ. Если Gemini не ответил — координатор должен увидеть это в
+  // переписке, а не гадать, почему бот молчит.
+  let reply: string;
+  let shouldPause: boolean;
   try {
-    const history = await getMessages(leadId);
+    // Пометки и недоставленные ответы в контекст не берём: пациент их не
+    // видел, а модель иначе будет считать, что уже это сказала.
+    const history = (await getMessages(leadId)).filter((m) => !m.deliveryFailed && !isSystemNote(m.text));
     // Remove the latest `items.length` messages from the context sent to Gemini,
     // because those are the buffered ones we are passing explicitly in `items` with full image data.
     const olderHistory = items.length > 0 ? history.slice(0, -items.length) : history;
@@ -335,36 +392,73 @@ async function processBatch(leadId: string, phone: string) {
       olderHistoryMessages: olderHistory.length,
     });
 
-    const { text: reply, shouldPause } = await askGemini({
-      history: olderHistory,
-      items,
-      requestId,
-    });
+    const result = await askGemini({ history: olderHistory, items, requestId });
+    reply = result.text;
+    shouldPause = result.shouldPause;
     log.info("processBatch: Gemini вернул ответ", { leadId, replyLength: reply.length, shouldPause });
+  } catch (err) {
+    log.error("processBatch: ИИ не смог сформировать ответ — сообщения пациента сохранены, нужен ответ вручную", {
+      leadId,
+      message: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    });
+    await addSystemNote(leadId, "— ИИ не смог ответить на последнее сообщение (сбой сервиса). Ответьте вручную —", log);
+    return;
+  }
 
-    await addMessage(leadId, "ai", reply);
-    log.info("processBatch: ответ ИИ сохранён в историю", { leadId });
+  const savedReply = await addMessage(leadId, "ai", reply);
+  log.info("processBatch: ответ ИИ сохранён в историю", { leadId });
 
+  // 2) Отправка. Раньше ошибка здесь только уходила в лог Render — в CRM
+  // ответ выглядел доставленным, бот молчал, и это никак не было видно.
+  // Теперь: пометка "не доставлено", пауза ИИ (повторять попытки на каждое
+  // сообщение бессмысленно — обычно это проблема канала или адресации, а не
+  // случайный сбой) и явная пометка для координатора.
+  try {
     await sendWhatsAppText(phone, reply, requestId);
     log.info("processBatch: ответ отправлен пациенту через Evolution API", { phone });
-
-    if (lead.stage === "new") {
-      await updateLead(leadId, { stage: "first_contact" });
-      log.info("processBatch: статус лида обновлён new → first_contact", { leadId });
-    }
-
-    // Модель сама решает, когда передать диалог координатору — обычно
-    // сразу после сбора документов (см. lib/playbook.ts). До этого coordinator
-    // ставил aiPaused только вручную; теперь ИИ может сделать это сам, тем же
-    // флагом, которым уже управляет вся остальная логика (webhook, chat-panel).
-    if (shouldPause) {
-      await updateLead(leadId, { aiPaused: true });
-      await addMessage(leadId, "ai", "— ИИ автоматически поставлен на паузу —");
-      log.info("processBatch: ИИ поставлен на паузу автоматически (pauseForHumanHandoff)", { leadId });
-    }
   } catch (err) {
-    // Messages are already safely in history either way, so a failure here should log and stop.
-    log.error("Ошибка при обращении к ИИ или отправке ответа в WhatsApp — сообщения пациента сохранены, координатор сможет ответить вручную", {
+    log.error("processBatch: не удалось отправить ответ пациенту через Evolution API", {
+      leadId,
+      phone,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    try {
+      await markMessageDeliveryFailed(savedReply.id);
+      await updateLead(leadId, { aiPaused: true });
+    } catch (markErr) {
+      log.error("processBatch: не удалось пометить сообщение как недоставленное", {
+        leadId,
+        message: markErr instanceof Error ? markErr.message : String(markErr),
+      });
+    }
+    await addSystemNote(leadId, "— Ответ ИИ не доставлен в WhatsApp. ИИ поставлен на паузу — ответьте вручную —", log);
+    return;
+  }
+
+  if (lead.stage === "new") {
+    await updateLead(leadId, { stage: "first_contact" });
+    log.info("processBatch: статус лида обновлён new → first_contact", { leadId });
+  }
+
+  // Модель сама решает, когда передать диалог координатору — обычно
+  // сразу после сбора документов (см. lib/playbook.ts). До этого coordinator
+  // ставил aiPaused только вручную; теперь ИИ может сделать это сам, тем же
+  // флагом, которым уже управляет вся остальная логика (webhook, chat-panel).
+  if (shouldPause) {
+    await updateLead(leadId, { aiPaused: true });
+    await addMessage(leadId, "ai", "— ИИ автоматически поставлен на паузу —");
+    log.info("processBatch: ИИ поставлен на паузу автоматически (pauseForHumanHandoff)", { leadId });
+  }
+}
+
+async function processBatch(leadId: string, phone: string) {
+  const requestId = newRequestId();
+  const log = baseLog.child(requestId);
+  try {
+    await processBatchInner(leadId, phone, log, requestId);
+  } catch (err) {
+    log.error("processBatch: необработанная ошибка — сообщения пациента сохранены, координатор сможет ответить вручную", {
       leadId,
       message: err instanceof Error ? err.message : String(err),
       stack: err instanceof Error ? err.stack : undefined,
