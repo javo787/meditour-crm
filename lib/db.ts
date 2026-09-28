@@ -1,4 +1,4 @@
-import { ObjectId, type Collection } from "mongodb";
+import { ObjectId, type Collection, type Filter } from "mongodb";
 
 import { getDb } from "@/lib/mongodb";
 import type { CaseAssistantMessage, CaseAssistantRole, ChatMessage, Lead, MessageSender, Stage } from "@/lib/types";
@@ -329,6 +329,73 @@ export async function getMediaAssetsForLead(
     mimeType: doc.mimeType,
     base64: doc.data.toString("base64"),
   }));
+}
+
+// Общий кусок для двух ручных вариантов очистки ниже — удаляет сами байты
+// из MediaAssets и снимает индикатор media у сообщений, которые на них
+// ссылались (иначе chat-panel продолжит пытаться отрисовать <img>/<audio>
+// на 404 после удаления). Текст переписки/пометка "(+фото)" не трогается —
+// удаляется только копия файла.
+async function deleteMediaAssetsMatching(
+  filter: Filter<MediaAssetDoc>
+): Promise<{ deletedCount: number }> {
+  const mediaCol = await mediaAssetsCollection();
+  const messagesCol = await messagesCollection();
+
+  const toDelete = await mediaCol.find(filter, { projection: { messageId: 1 } }).toArray();
+  const messageIds = toDelete.map((doc) => doc.messageId);
+
+  const result = await mediaCol.deleteMany(filter);
+
+  if (messageIds.length > 0) {
+    await messagesCol.updateMany({ _id: { $in: messageIds } }, { $unset: { media: "" } });
+  }
+
+  return { deletedCount: result.deletedCount };
+}
+
+export async function deleteAllMediaAssets(): Promise<{ deletedCount: number }> {
+  return deleteMediaAssetsMatching({});
+}
+
+export async function deleteMediaAssetsOlderThan(days: number): Promise<{ deletedCount: number }> {
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  return deleteMediaAssetsMatching({ at: { $lt: cutoff } });
+}
+
+// Для страницы настроек — сколько всего занято в MongoDB и по каким
+// коллекциям, чтобы было видно, что именно растёт (обычно MediaAssets).
+// Цифры приблизительные (storageSize после сжатия WiredTiger) — точная
+// цифра для тарифа всегда в самой Atlas, тут только ориентир.
+export async function getStorageStats(): Promise<{
+  totalBytes: number;
+  collections: Array<{ name: string; sizeBytes: number; count: number }>;
+}> {
+  const db = await getDb();
+  const dbStats = await db.command({ dbStats: 1 });
+
+  const collectionNames = ["Leads", "Messages", "MediaAssets", "CaseAssistantMessages"];
+  const collections = await Promise.all(
+    collectionNames.map(async (name) => {
+      try {
+        const stats = await db.command({ collStats: name });
+        return {
+          name,
+          sizeBytes: stats.storageSize ?? stats.size ?? 0,
+          count: stats.count ?? 0,
+        };
+      } catch {
+        // Коллекция может ещё не существовать (например, MediaAssets на
+        // свежей базе без единого фото) — collStats на неё падает с ошибкой.
+        return { name, sizeBytes: 0, count: 0 };
+      }
+    })
+  );
+
+  return {
+    totalBytes: dbStats.storageSize ?? dbStats.dataSize ?? 0,
+    collections,
+  };
 }
 
 export async function getCaseAssistantMessages(leadId: string): Promise<CaseAssistantMessage[]> {
