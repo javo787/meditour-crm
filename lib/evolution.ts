@@ -20,6 +20,30 @@ function getConfig(): { baseUrl: string; apiKey: string; instance: string } {
   return { baseUrl: BASE_URL, apiKey: API_KEY, instance: INSTANCE };
 }
 
+async function sendTextOnce(
+  baseUrl: string,
+  apiKey: string,
+  instance: string,
+  number: string,
+  text: string
+): Promise<void> {
+  const res = await fetch(`${baseUrl}/message/sendText/${instance}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", apikey: apiKey },
+    body: JSON.stringify({ number, text }),
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Evolution API sendText вернул ${res.status}: ${body}`);
+  }
+}
+
+// "Connection Closed" (500 от Evolution) — типичный обрыв внутреннего
+// WebSocket-соединения Baileys с WhatsApp, который обычно сам
+// восстанавливается за секунды. Раньше одна такая ошибка сразу считалась
+// окончательным провалом (ИИ на паузу, "не доставлено") — 3 ручных
+// сообщения подряд падали с одной и той же ошибкой ровно так. Теперь
+// пробуем ещё дважды с паузой, прежде чем сдаться.
 export async function sendWhatsAppText(number: string, text: string, requestId?: string): Promise<void> {
   const logger = requestId ? log.child(requestId) : log;
   const { baseUrl, apiKey, instance } = getConfig();
@@ -30,27 +54,30 @@ export async function sendWhatsAppText(number: string, text: string, requestId?:
     textLength: text.length,
   });
 
-  let res: Response;
-  try {
-    res = await fetch(`${baseUrl}/message/sendText/${instance}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", apikey: apiKey },
-      body: JSON.stringify({ number, text }),
-    });
-  } catch (err) {
-    logger.error("sendText: сетевая ошибка запроса к Evolution API", {
-      message: err instanceof Error ? err.message : String(err),
-    });
-    throw err;
-  }
+  const MAX_ATTEMPTS = 3;
+  const RETRY_DELAYS_MS = [1500, 3000];
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    logger.error("sendText: Evolution API вернул ошибку", { status: res.status, body });
-    throw new Error(`Evolution API sendText вернул ${res.status}: ${body}`);
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      await sendTextOnce(baseUrl, apiKey, instance, number, text);
+      logger.info("sendText: успешно отправлено", { attempt });
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (attempt === MAX_ATTEMPTS) {
+        logger.error("sendText: не удалось отправить после всех попыток", {
+          attempts: MAX_ATTEMPTS,
+          message,
+        });
+        throw err;
+      }
+      logger.warn("sendText: попытка не удалась, повторяем — часто это временный обрыв соединения у шлюза", {
+        attempt,
+        message,
+      });
+      await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt - 1]));
+    }
   }
-
-  logger.info("sendText: успешно отправлено", { status: res.status });
 }
 
 export async function fetchMediaBase64(

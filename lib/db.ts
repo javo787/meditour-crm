@@ -283,6 +283,38 @@ export async function addMessage(
   return toMessage({ _id: result.insertedId, ...doc });
 }
 
+// Единственный документ-"пульс": обновляется БЕЗУСЛОВНО на каждый вызов
+// вебхука Evolution, независимо от типа события, авторизации или того, что
+// произошло дальше. Единственный способ достоверно отличить "Evolution не
+// шлёт нам вебхуки вообще" (обрыв между WhatsApp и Evolution — вне
+// досягаемости этого кода) от "вебхуки приходят, но что-то ломается
+// внутри нашей обработки".
+interface WebhookHeartbeatDoc {
+  _id: string;
+  lastReceivedAt: string;
+  lastEventType: string;
+}
+
+export async function recordWebhookHeartbeat(eventType: string): Promise<void> {
+  const db = await getDb();
+  const col = db.collection<WebhookHeartbeatDoc>("WebhookHeartbeat");
+  await col.updateOne(
+    { _id: "singleton" },
+    { $set: { lastReceivedAt: new Date().toISOString(), lastEventType: eventType || "unknown" } },
+    { upsert: true }
+  );
+}
+
+export async function getWebhookHeartbeat(): Promise<{
+  lastReceivedAt: string | null;
+  lastEventType: string | null;
+}> {
+  const db = await getDb();
+  const col = db.collection<WebhookHeartbeatDoc>("WebhookHeartbeat");
+  const doc = await col.findOne({ _id: "singleton" });
+  return { lastReceivedAt: doc?.lastReceivedAt ?? null, lastEventType: doc?.lastEventType ?? null };
+}
+
 // Пометка "не доставлено" — ставится, когда сообщение уже лежит в истории,
 // а отправка в WhatsApp упала (см. processBatch в вебхуке и роут
 // /api/leads/[id]/messages).

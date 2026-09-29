@@ -62,7 +62,34 @@ describe("sendWhatsAppText", () => {
     );
   });
 
-  it("should throw network error if fetch fails", async () => {
+  it("should retry and eventually succeed after transient failures", async () => {
+    process.env.EVOLUTION_API_URL = "http://api.evolution.local";
+    process.env.EVOLUTION_API_KEY = "test-api-key";
+    process.env.EVOLUTION_INSTANCE = "test-instance";
+
+    const { sendWhatsAppText } = await import("./evolution");
+
+    // "Connection Closed" — типичный временный обрыв WebSocket-сессии
+    // Baileys внутри Evolution, из-за которого один и тот же ручной
+    // ответ координатора падал три раза подряд с одной и той же ошибкой.
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: jest.fn().mockResolvedValueOnce('{"error":"Connection Closed"}'),
+      })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+
+    jest.useFakeTimers();
+    const result = sendWhatsAppText("79991234567", "Hello world!");
+    await jest.runAllTimersAsync();
+    await result;
+    jest.useRealTimers();
+
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("should throw network error if fetch fails on every attempt", async () => {
     process.env.EVOLUTION_API_URL = "http://api.evolution.local";
     process.env.EVOLUTION_API_KEY = "test-api-key";
     process.env.EVOLUTION_INSTANCE = "test-instance";
@@ -70,27 +97,40 @@ describe("sendWhatsAppText", () => {
     const { sendWhatsAppText } = await import("./evolution");
 
     const networkError = new Error("Network offline");
-    (global.fetch as jest.Mock).mockRejectedValueOnce(networkError);
+    (global.fetch as jest.Mock).mockRejectedValue(networkError);
 
-    await expect(sendWhatsAppText("79991234567", "Hello world!")).rejects.toThrow("Network offline");
+    jest.useFakeTimers();
+    const assertion = expect(sendWhatsAppText("79991234567", "Hello world!")).rejects.toThrow(
+      "Network offline"
+    );
+    await jest.runAllTimersAsync();
+    await assertion;
+    jest.useRealTimers();
+
+    expect(global.fetch).toHaveBeenCalledTimes(3);
   });
 
-  it("should throw if response is not ok", async () => {
+  it("should throw if response is not ok on every attempt", async () => {
     process.env.EVOLUTION_API_URL = "http://api.evolution.local";
     process.env.EVOLUTION_API_KEY = "test-api-key";
     process.env.EVOLUTION_INSTANCE = "test-instance";
 
     const { sendWhatsAppText } = await import("./evolution");
 
-    // Mock non-ok response
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as jest.Mock).mockResolvedValue({
       ok: false,
       status: 400,
-      text: jest.fn().mockResolvedValueOnce("Bad Request: invalid number"),
+      text: jest.fn().mockResolvedValue("Bad Request: invalid number"),
     });
 
-    await expect(sendWhatsAppText("invalid", "text")).rejects.toThrow(
+    jest.useFakeTimers();
+    const assertion = expect(sendWhatsAppText("invalid", "text")).rejects.toThrow(
       "Evolution API sendText вернул 400: Bad Request: invalid number"
     );
+    await jest.runAllTimersAsync();
+    await assertion;
+    jest.useRealTimers();
+
+    expect(global.fetch).toHaveBeenCalledTimes(3);
   });
 });

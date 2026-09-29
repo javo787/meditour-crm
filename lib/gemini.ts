@@ -57,7 +57,7 @@ function roleFor(from: ChatMessage["from"]): "user" | "model" {
 const PAUSE_FUNCTION_DECLARATION: GeminiFunctionDeclaration = {
   name: "pauseForHumanHandoff",
   description:
-    "Call this together with your final message ONLY in exactly two situations, never speculatively and never as a default way to end a message. (1) You just told the patient you are passing along the medical documents/history they shared to the Indian doctors and will get back to them once there's a reply — call this only once the patient has actually shared what they have (not while you are still asking questions or waiting for something from them). (2) You are handing off per the playbook's КОГДА ПЕРЕДАВАТЬ ЧЕЛОВЕКУ rule (sensitive topic, patient explicitly asked for a human, patient is upset, or the request is outside this playbook). Do not call it because the conversation is quiet, because you are unsure how to answer, or for any reason other than these two.",
+    "Call this together with your final message ONLY in exactly two situations, never speculatively and never as a default way to end a message. (1) You just told the patient you are passing along the medical documents/history they shared to the Indian doctors and will get back to them once there's a reply — call this only once the patient has actually shared what they have (not while you are still asking questions or waiting for something from them). (2) You are handing off per the playbook's КОГДА ПЕРЕДАВАТЬ ЧЕЛОВЕКУ rule (sensitive topic, patient explicitly asked for a human, patient is upset, or the request is outside this playbook). Do not call it because the conversation is quiet, because you are unsure how to answer, or for any reason other than these two. CRITICAL: this call must always be accompanied by real message text in the same response — never call this function with an empty or missing text part, the patient still needs to receive a proper closing message.",
 };
 
 async function callModel(
@@ -343,11 +343,19 @@ export async function askGemini(params: {
     logger.info("askGemini: модель вызвала pauseForHumanHandoff — передаём диалог координатору");
   }
   if (!text) {
-    logger.warn("askGemini: используется запасная фраза для пациента");
+    // Промпт просит вызывать функцию ВМЕСТЕ с текстом, но модель иногда
+    // всё равно вызывает её без единого слова — тогда старый общий
+    // фолбэк ("уточните вопрос") уходил пациенту прямо перед тем, как ИИ
+    // замолкает на паузе, что не имело никакого смысла в этом контексте.
+    logger.warn("askGemini: используется запасная фраза для пациента", { shouldPause });
   }
 
   return {
-    text: text || "Извините, не получилось сформировать ответ — уточните, пожалуйста, вопрос.",
+    text:
+      text ||
+      (shouldPause
+        ? "Спасибо! Мы получили вашу информацию и передаём её нашим специалистам. Как только будет ответ, сразу напишем вам."
+        : "Извините, не получилось сформировать ответ — уточните, пожалуйста, вопрос."),
     shouldPause,
   };
 }

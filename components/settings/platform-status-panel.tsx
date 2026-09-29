@@ -13,6 +13,7 @@ interface StatusResponse {
   whatsapp: boolean;
   lastInboundAt: string | null;
   failedDeliveries24h: number;
+  lastWebhookAt: string | null;
   checkedAt: string;
 }
 
@@ -73,13 +74,38 @@ export function PlatformStatusPanel() {
         </Button>
       </CardHeader>
       <CardContent className="flex flex-col gap-2">
+        {status &&
+          (() => {
+            const hoursSinceWebhook = status.lastWebhookAt
+              ? (Date.now() - new Date(status.lastWebhookAt).getTime()) / 3_600_000
+              : null;
+            const stale = hoursSinceWebhook === null || hoursSinceWebhook > 3;
+            return (
+              <div className="rounded-md border border-border px-4 py-3">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium">Evolution вызывал наш вебхук</span>
+                  <span className={`text-sm font-medium ${stale ? "text-destructive" : "text-emerald-600"}`}>
+                    {status.lastWebhookAt
+                      ? formatDistanceToNow(new Date(status.lastWebhookAt), { addSuffix: true, locale: ru })
+                      : "никогда"}
+                  </span>
+                </div>
+                {stale && (
+                  <p className="mt-1.5 text-xs text-muted-foreground">
+                    Если это давно, а WhatsApp и ИИ ниже показывают «Работает» — проблема не в CRM: WhatsApp
+                    просто не передаёт новые сообщения в шлюз. Это чинится на стороне шлюза/сессии, не здесь.
+                  </p>
+                )}
+              </div>
+            );
+          })()}
         <StatusRow label="ИИ-ассистент" online={status ? status.ai : null} />
         <StatusRow label="WhatsApp" online={status ? status.whatsapp : null} />
         {status && (
           <>
             <p className="px-1 text-xs text-muted-foreground">
               «WhatsApp: Работает» означает только, что канал не отключён — не то, что сообщения
-              реально доходят до пациентов. Смотрите строки ниже.
+              реально доходят до пациентов. Смотрите строки выше и ниже.
             </p>
             <div className="flex items-center justify-between px-1 text-xs">
               <span className="text-muted-foreground">Последнее сообщение от пациента</span>

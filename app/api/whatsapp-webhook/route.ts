@@ -7,6 +7,7 @@ import {
   getLead,
   getMessages,
   markMessageDeliveryFailed,
+  recordWebhookHeartbeat,
   saveMediaAsset,
   updateLead,
 } from "@/lib/db";
@@ -84,6 +85,16 @@ async function parseAndValidateWebhook(request: Request, log: Logger) {
     remoteJid: body.data?.key?.remoteJid,
     remoteJidAlt: body.data?.key?.remoteJidAlt,
     fromMe: body.data?.key?.fromMe,
+  });
+
+  // Безусловно, до какой-либо ещё логики — см. lib/db.ts. Если Evolution
+  // не вызывает вебхук вообще (обрыв между WhatsApp и самим Evolution),
+  // это никогда не обновится, и на /dashboard/settings будет видно
+  // "давно", а не молчание без объяснений.
+  await recordWebhookHeartbeat(body.event ?? "unknown").catch((err) => {
+    log.error("не удалось записать webhook heartbeat", {
+      message: err instanceof Error ? err.message : String(err),
+    });
   });
 
   if (!isAuthentic(body)) {
