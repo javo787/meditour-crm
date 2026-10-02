@@ -91,7 +91,11 @@ async function parseAndValidateWebhook(request: Request, log: Logger) {
   // не вызывает вебхук вообще (обрыв между WhatsApp и самим Evolution),
   // это никогда не обновится, и на /dashboard/settings будет видно
   // "давно", а не молчание без объяснений.
-  await recordWebhookHeartbeat(body.event ?? "unknown").catch((err) => {
+  // Намеренно БЕЗ await: это чисто диагностическая запись, она никогда не
+  // должна добавлять задержку (тем более — таймаут на обрыв MongoDB) на
+  // путь обработки настоящего сообщения пациента, который и сам не раз
+  // упирается в ту же базу.
+  recordWebhookHeartbeat(body.event ?? "unknown").catch((err) => {
     log.error("не удалось записать webhook heartbeat", {
       message: err instanceof Error ? err.message : String(err),
     });
@@ -334,15 +338,31 @@ export async function POST(request: Request) {
   const { body, phone } = validationResult;
   const data = body.data as NonNullable<EvolutionWebhookBody["data"]>;
 
-  const { text, storedText, image, audio } = await extractMessageContent(
-    data.message,
-    data.messageType ?? "",
-    data.key,
-    requestId,
-    log
-  );
+  try {
+    const { text, storedText, image, audio } = await extractMessageContent(
+      data.message,
+      data.messageType ?? "",
+      data.key,
+      requestId,
+      log
+    );
 
-  return await processNewMessage(phone, data, text, storedText, image, audio, log);
+    return await processNewMessage(phone, data, text, storedText, image, audio, log);
+  } catch (err) {
+    // Раньше падение здесь (например, обрыв соединения с MongoDB) уходило
+    // необработанным — сообщение терялось целиком, даже не сохранившись,
+    // без единого следа в CRM, кроме сырого стека в логах Render. Логируем
+    // явно, с телефоном и текстом — это единственное место, где контент
+    // ещё можно восстановить руками, раз он не попал в базу.
+    log.error("Не удалось обработать входящее сообщение — оно нигде не сохранено", {
+      phone,
+      text: data.message?.conversation ?? data.message?.extendedTextMessage?.text,
+      messageType: data.messageType,
+      message: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    });
+    return NextResponse.json({ ok: false, error: "internal-error" }, { status: 500 });
+  }
 }
 
 // Системные пометки в переписке ("— ИИ поставлен на паузу —" и т.п.) — это
