@@ -12,7 +12,7 @@ export default async function LeadsPage({
   const leads = await getLeads({ q: searchParams.q, stage });
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-hidden p-5">
+    <div className="flex h-full flex-col gap-4 overflow-hidden p-4 sm:p-5">
       <div>
         <h1 className="text-lg font-semibold tracking-tight">Лиды</h1>
         <p className="text-sm text-muted-foreground">

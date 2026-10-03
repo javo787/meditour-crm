@@ -76,7 +76,7 @@ export function ChatPanel({
 
   return (
     <Card className="flex flex-1 flex-col">
-      <CardHeader className="flex-row items-center justify-between">
+      <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
         <CardTitle>Переписка</CardTitle>
         <Button
           type="button"

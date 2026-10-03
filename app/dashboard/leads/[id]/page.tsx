@@ -16,7 +16,7 @@ export default async function LeadDetailPage({ params }: { params: { id: string 
   const caseAssistantMessages = await getCaseAssistantMessages(params.id);
 
   return (
-    <div className="flex h-full flex-col gap-4 overflow-y-auto p-5">
+    <div className="flex h-full flex-col gap-4 overflow-y-auto p-4 sm:p-5">
       <Link
         href="/dashboard/leads"
         className="flex w-fit items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"

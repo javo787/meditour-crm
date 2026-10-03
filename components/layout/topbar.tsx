@@ -3,6 +3,7 @@
 import { signOut, useSession } from "next-auth/react";
 import { LogOut } from "lucide-react";
 
+import { MobileNav } from "@/components/layout/mobile-nav";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -26,9 +27,15 @@ export function Topbar() {
     .toUpperCase();
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between border-b border-border bg-card px-5">
-      <div className="text-sm text-muted-foreground">Meditur · WhatsApp CRM</div>
-      <div className="flex items-center gap-2">
+    <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border bg-card px-3 sm:px-5">
+      <div className="flex min-w-0 items-center gap-2">
+        <MobileNav />
+        {/* На телефоне название приложения и так видно в самой панели меню — тут важнее место для гамбургера */}
+        <div className="hidden truncate text-sm text-muted-foreground sm:block">
+          Meditur · WhatsApp CRM
+        </div>
+      </div>
+      <div className="flex shrink-0 items-center gap-2">
         <ThemeToggle />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

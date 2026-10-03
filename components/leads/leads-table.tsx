@@ -16,6 +16,7 @@ import { ru } from "date-fns/locale";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { STAGE_STYLES, stageLabel } from "@/lib/status";
 import { cn } from "@/lib/utils";
 import type { Lead } from "@/lib/types";
@@ -81,53 +82,98 @@ export function LeadsTable({ data }: { data: Lead[] }) {
     getSortedRowModel: getSortedRowModel(),
   });
 
+  const rows = table.getRowModel().rows;
+
   return (
-    <div className="flex-1 overflow-auto rounded-lg border border-border">
-      <table className="w-full text-left text-sm">
-        <thead className="sticky top-0 z-10 bg-card">
-          {table.getHeaderGroups().map((headerGroup) => (
-            <tr key={headerGroup.id} className="border-b border-border">
-              {headerGroup.headers.map((header) => (
-                <th key={header.id} className="px-4 py-2.5">
-                  {header.isPlaceholder ? null : (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="-ml-3 h-7 gap-1 px-3 text-xs font-medium text-muted-foreground hover:text-foreground"
-                      onClick={header.column.getToggleSortingHandler()}
-                    >
-                      {flexRender(header.column.columnDef.header, header.getContext())}
-                      {header.column.getIsSorted() && <ArrowUpDown className="h-3 w-3" />}
-                    </Button>
-                  )}
-                </th>
-              ))}
-            </tr>
-          ))}
-        </thead>
-        <tbody>
-          {table.getRowModel().rows.map((row) => (
-            <tr
-              key={row.id}
-              onClick={() => router.push(`/dashboard/leads/${row.original.id}`)}
-              className="cursor-pointer border-b border-border last:border-0 hover:bg-secondary/50"
-            >
-              {row.getVisibleCells().map((cell) => (
-                <td key={cell.id} className="px-4 py-3">
-                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+    <>
+      {/* 5 колонок с горизонтальным скроллом на телефоне — не профессиональный
+          UX; ниже md показываем те же данные карточками, список один и тот же
+          getRowModel(), просто два разных способа его отрисовать. */}
+      <div className="hidden flex-1 overflow-auto rounded-lg border border-border md:block">
+        <table className="w-full text-left text-sm">
+          <thead className="sticky top-0 z-10 bg-card">
+            {table.getHeaderGroups().map((headerGroup) => (
+              <tr key={headerGroup.id} className="border-b border-border">
+                {headerGroup.headers.map((header) => (
+                  <th key={header.id} className="px-4 py-2.5">
+                    {header.isPlaceholder ? null : (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="-ml-3 h-7 gap-1 px-3 text-xs font-medium text-muted-foreground hover:text-foreground"
+                        onClick={header.column.getToggleSortingHandler()}
+                      >
+                        {flexRender(header.column.columnDef.header, header.getContext())}
+                        {header.column.getIsSorted() && <ArrowUpDown className="h-3 w-3" />}
+                      </Button>
+                    )}
+                  </th>
+                ))}
+              </tr>
+            ))}
+          </thead>
+          <tbody>
+            {rows.map((row) => (
+              <tr
+                key={row.id}
+                onClick={() => router.push(`/dashboard/leads/${row.original.id}`)}
+                className="cursor-pointer border-b border-border last:border-0 hover:bg-secondary/50"
+              >
+                {row.getVisibleCells().map((cell) => (
+                  <td key={cell.id} className="px-4 py-3">
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </td>
+                ))}
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={columns.length} className="px-4 py-10 text-center text-sm text-muted-foreground">
+                  Ничего не найдено — измените фильтр или запрос
                 </td>
-              ))}
-            </tr>
-          ))}
-          {table.getRowModel().rows.length === 0 && (
-            <tr>
-              <td colSpan={columns.length} className="px-4 py-10 text-center text-sm text-muted-foreground">
-                Ничего не найдено — измените фильтр или запрос
-              </td>
-            </tr>
-          )}
-        </tbody>
-      </table>
-    </div>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex flex-1 flex-col gap-2 overflow-y-auto md:hidden">
+        {rows.map((row) => {
+          const lead = row.original;
+          const overdue =
+            lead.stage !== "won" && lead.stage !== "declined" && isPast(new Date(lead.nextTouch));
+          return (
+            <Card
+              key={row.id}
+              onClick={() => router.push(`/dashboard/leads/${lead.id}`)}
+              className="cursor-pointer p-3 active:bg-secondary/50"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="truncate font-medium">{lead.name}</p>
+                  <p className="text-xs text-muted-foreground">{lead.phone}</p>
+                </div>
+                <Badge className={cn("shrink-0 border-transparent", STAGE_STYLES[lead.stage])}>
+                  {stageLabel(lead.stage)}
+                </Badge>
+              </div>
+              <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">{lead.diagnosis}</p>
+              <div className="mt-2 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                <span className="truncate">{lead.assignee}</span>
+                <span className={cn("shrink-0", overdue && "font-medium text-destructive")}>
+                  {format(new Date(lead.nextTouch), "d MMMM", { locale: ru })}
+                  {overdue && " · просрочено"}
+                </span>
+              </div>
+            </Card>
+          );
+        })}
+        {rows.length === 0 && (
+          <p className="py-10 text-center text-sm text-muted-foreground">
+            Ничего не найдено — измените фильтр или запрос
+          </p>
+        )}
+      </div>
+    </>
   );
 }

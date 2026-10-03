@@ -2,15 +2,10 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { KanbanSquare, Settings, Stethoscope, Table2 } from "lucide-react";
+import { Stethoscope } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-
-const NAV_ITEMS = [
-  { href: "/dashboard", label: "Воронка", icon: KanbanSquare, exact: true },
-  { href: "/dashboard/leads", label: "Лиды", icon: Table2, exact: false },
-  { href: "/dashboard/settings", label: "Настройки", icon: Settings, exact: false },
-];
+import { NAV_ITEMS } from "@/components/layout/nav-items";
 
 export function Sidebar() {
   const pathname = usePathname();

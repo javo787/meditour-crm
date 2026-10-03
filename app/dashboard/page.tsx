@@ -8,7 +8,7 @@ export default async function DashboardPage() {
   const columns = await getLeadsByStage();
 
   return (
-    <div className="flex h-full flex-col p-5">
+    <div className="flex h-full flex-col p-4 sm:p-5">
       <div className="mb-4">
         <h1 className="text-lg font-semibold tracking-tight">Воронка лидов</h1>
         <p className="text-sm text-muted-foreground">

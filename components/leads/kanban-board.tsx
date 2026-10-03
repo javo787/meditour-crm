@@ -90,7 +90,7 @@ export function KanbanBoard({
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
     >
-      <div className="thin-scrollbar flex flex-1 gap-3 overflow-x-auto pb-2">
+      <div className="thin-scrollbar flex flex-1 snap-x snap-mandatory gap-3 overflow-x-auto pb-2">
         {STAGES.map((s) => (
           <KanbanColumn key={s.key} stage={s.key} label={s.label} leads={columns[s.key]} />
         ))}
