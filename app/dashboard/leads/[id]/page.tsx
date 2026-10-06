@@ -8,6 +8,9 @@ import { CaseAssistantPanel } from "@/components/leads/patient-card/case-assista
 import { ChatPanel } from "@/components/leads/patient-card/chat-panel";
 import { NotesPanel } from "@/components/leads/patient-card/notes-panel";
 import { StagePanel } from "@/components/leads/patient-card/stage-panel";
+import { TagsPanel } from "@/components/leads/patient-card/tags-panel";
+import { PhoneLink } from "@/components/leads/phone-link";
+import { WaitingBadge } from "@/components/leads/waiting-badge";
 
 export default async function LeadDetailPage({ params }: { params: { id: string } }) {
   const lead = await getLead(params.id);
@@ -28,8 +31,14 @@ export default async function LeadDetailPage({ params }: { params: { id: string 
       <div className="grid flex-1 grid-cols-1 gap-4 lg:grid-cols-[1fr_340px]">
         <div className="flex flex-col gap-4">
           <div>
-            <h1 className="text-lg font-semibold tracking-tight">{lead.name}</h1>
-            <p className="text-sm text-muted-foreground">{lead.phone}</p>
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-lg font-semibold tracking-tight">{lead.name}</h1>
+              <WaitingBadge lead={lead} />
+            </div>
+            <div className="flex items-center gap-1.5">
+              <p className="text-sm text-muted-foreground">{lead.phone}</p>
+              <PhoneLink phone={lead.phone} className="h-6 w-6 text-primary hover:bg-primary/10 hover:text-primary" />
+            </div>
           </div>
           <AnamnesisPanel lead={lead} />
           <ChatPanel
@@ -40,6 +49,7 @@ export default async function LeadDetailPage({ params }: { params: { id: string 
         </div>
         <div className="flex flex-col gap-4">
           <StagePanel lead={lead} />
+          <TagsPanel leadId={lead.id} initialTags={lead.tags} />
           <NotesPanel leadId={lead.id} initialNotes={lead.notes} />
           <CaseAssistantPanel leadId={lead.id} initialMessages={caseAssistantMessages} />
         </div>

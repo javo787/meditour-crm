@@ -1,7 +1,10 @@
 import { ObjectId, type Collection, type Filter } from "mongodb";
 
 import { getDb } from "@/lib/mongodb";
+import { createLogger } from "@/lib/logger";
 import type { CaseAssistantMessage, CaseAssistantRole, ChatMessage, Lead, MessageSender, Stage } from "@/lib/types";
+
+const log = createLogger("db");
 
 // Слой данных поверх MongoDB Atlas (коллекции Leads и Messages из Этапа 1
 // плана). Раньше (Этап 2) здесь был массив в памяти процесса — сигнатуры
@@ -28,6 +31,9 @@ interface LeadDoc {
   notes?: string;
   estimateSentAt?: string;
   followUpStep?: number;
+  tags?: string[];
+  lastMessageFrom?: MessageSender;
+  lastMessageAt?: string;
 }
 
 interface MessageDoc {
@@ -105,6 +111,9 @@ function toLead(doc: LeadDoc): Lead {
     notes: doc.notes,
     estimateSentAt: doc.estimateSentAt,
     followUpStep: doc.followUpStep,
+    tags: doc.tags,
+    lastMessageFrom: doc.lastMessageFrom,
+    lastMessageAt: doc.lastMessageAt,
   };
 }
 
@@ -240,6 +249,7 @@ export async function updateLead(
       | "estimateSentAt"
       | "followUpStep"
       | "anamnesis"
+      | "tags"
     >
   >
 ): Promise<Lead | undefined> {
@@ -271,15 +281,36 @@ export async function addMessage(
   media?: { kind: "image" | "audio"; mimeType: string }
 ): Promise<ChatMessage> {
   const col = await messagesCollection();
+  const at = new Date().toISOString();
   const doc = {
     leadId: new ObjectId(leadId),
     from,
     text,
-    at: new Date().toISOString(),
+    at,
     media,
   } satisfies Omit<MessageDoc, "_id">;
 
   const result = await col.insertOne(doc as MessageDoc);
+
+  // Денормализовано на сам лид — иначе канбан/таблица (десятки карточек
+  // разом) делали бы отдельный запрос на лида только чтобы понять, кто
+  // написал последним. На этом строится "ждёт ответа от нас/от пациента"
+  // (см. lib/status.ts) — всегда актуально само по себе, без ручных пометок.
+  // Best-effort: если это обновление не удастся, само сообщение уже
+  // сохранено и не теряется — страдает только индикатор в списках.
+  try {
+    const leadsCol = await leadsCollection();
+    await leadsCol.updateOne(
+      { _id: new ObjectId(leadId) },
+      { $set: { lastMessageFrom: from, lastMessageAt: at } }
+    );
+  } catch (err) {
+    log.error("addMessage: не удалось обновить lastMessageFrom/At на лиде", {
+      leadId,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   return toMessage({ _id: result.insertedId, ...doc });
 }
 

@@ -9,6 +9,10 @@ import { User } from "lucide-react";
 
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Card } from "@/components/ui/card";
+import { PhoneLink } from "@/components/leads/phone-link";
+import { TagChip } from "@/components/leads/tag-chip";
+import { WaitingBadge } from "@/components/leads/waiting-badge";
+import { getWaitingBadge } from "@/lib/status";
 import { cn } from "@/lib/utils";
 import type { Lead } from "@/lib/types";
 
@@ -27,6 +31,7 @@ export function KanbanCardContent({
     .map((p) => p[0])
     .slice(0, 2)
     .join("");
+  const hasBadges = Boolean(getWaitingBadge(lead) || lead.tags?.length);
 
   return (
     <Card
@@ -44,7 +49,16 @@ export function KanbanCardContent({
           <p className="truncate text-sm font-medium">{lead.name}</p>
           <p className="truncate text-xs text-muted-foreground">{lead.diagnosis}</p>
         </div>
+        <PhoneLink phone={lead.phone} />
       </div>
+      {hasBadges && (
+        <div className="mt-2 flex flex-wrap items-center gap-1">
+          <WaitingBadge lead={lead} />
+          {lead.tags?.map((tag) => (
+            <TagChip key={tag} tag={tag} />
+          ))}
+        </div>
+      )}
       <div className="mt-3 flex items-center justify-between text-xs text-muted-foreground">
         <span className="flex items-center gap-1">
           <User className="h-3 w-3" />

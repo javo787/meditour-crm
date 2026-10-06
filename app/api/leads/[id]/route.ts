@@ -24,6 +24,7 @@ const patchSchema = z.object({
   source: z.string().max(200).optional(),
   campaign: z.string().max(300).optional(),
   homeLocation: z.string().max(200).optional(),
+  tags: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
 });
 
 export async function GET(

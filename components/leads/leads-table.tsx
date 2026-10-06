@@ -17,7 +17,10 @@ import { ru } from "date-fns/locale";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { STAGE_STYLES, stageLabel } from "@/lib/status";
+import { PhoneLink } from "@/components/leads/phone-link";
+import { TagChip } from "@/components/leads/tag-chip";
+import { WaitingBadge } from "@/components/leads/waiting-badge";
+import { getWaitingBadge, STAGE_STYLES, stageLabel } from "@/lib/status";
 import { cn } from "@/lib/utils";
 import type { Lead } from "@/lib/types";
 
@@ -26,9 +29,12 @@ const columns: ColumnDef<Lead>[] = [
     accessorKey: "name",
     header: "Пациент",
     cell: ({ row }) => (
-      <div>
-        <p className="font-medium">{row.original.name}</p>
-        <p className="text-xs text-muted-foreground">{row.original.phone}</p>
+      <div className="flex items-center gap-1.5">
+        <div className="min-w-0">
+          <p className="truncate font-medium">{row.original.name}</p>
+          <p className="truncate text-xs text-muted-foreground">{row.original.phone}</p>
+        </div>
+        <PhoneLink phone={row.original.phone} />
       </div>
     ),
   },
@@ -43,9 +49,15 @@ const columns: ColumnDef<Lead>[] = [
     accessorKey: "stage",
     header: "Статус",
     cell: ({ row }) => (
-      <Badge className={cn("border-transparent", STAGE_STYLES[row.original.stage])}>
-        {stageLabel(row.original.stage)}
-      </Badge>
+      <div className="flex flex-wrap items-center gap-1">
+        <Badge className={cn("border-transparent", STAGE_STYLES[row.original.stage])}>
+          {stageLabel(row.original.stage)}
+        </Badge>
+        <WaitingBadge lead={row.original} />
+        {row.original.tags?.map((tag) => (
+          <TagChip key={tag} tag={tag} />
+        ))}
+      </div>
     ),
   },
   {
@@ -149,14 +161,25 @@ export function LeadsTable({ data }: { data: Lead[] }) {
               className="cursor-pointer p-3 active:bg-secondary/50"
             >
               <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <p className="truncate font-medium">{lead.name}</p>
-                  <p className="text-xs text-muted-foreground">{lead.phone}</p>
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <div className="min-w-0">
+                    <p className="truncate font-medium">{lead.name}</p>
+                    <p className="truncate text-xs text-muted-foreground">{lead.phone}</p>
+                  </div>
+                  <PhoneLink phone={lead.phone} />
                 </div>
                 <Badge className={cn("shrink-0 border-transparent", STAGE_STYLES[lead.stage])}>
                   {stageLabel(lead.stage)}
                 </Badge>
               </div>
+              {(getWaitingBadge(lead) || lead.tags?.length) && (
+                <div className="mt-1.5 flex flex-wrap items-center gap-1">
+                  <WaitingBadge lead={lead} />
+                  {lead.tags?.map((tag) => (
+                    <TagChip key={tag} tag={tag} />
+                  ))}
+                </div>
+              )}
               <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">{lead.diagnosis}</p>
               <div className="mt-2 flex items-center justify-between gap-2 text-xs text-muted-foreground">
                 <span className="truncate">{lead.assignee}</span>

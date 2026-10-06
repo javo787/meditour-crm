@@ -38,6 +38,15 @@ export interface Lead {
   // Для автоматической каденции follow-up после «Сметы» (см. lib/follow-up.ts)
   estimateSentAt?: string; // ISO — когда лид зашёл в estimate_sent
   followUpStep?: number; // 0 = ничего не отправлено, 1..4 = какой шаг каденции уже сделан
+  // Свободные метки координатора — аналог лейблов в WhatsApp Business
+  // («Несерьёзный», «Wanna go» и т.п.). Редактируются вручную.
+  tags?: string[];
+  // Кто написал последним — обновляется автоматически при каждом addMessage
+  // (см. lib/db.ts), НЕ патчится напрямую через updateLead. На этом строится
+  // "ждёт ответа от нас / от пациента" — в отличие от tags, этому не нужно
+  // и не должно быть ручного управления, иначе показатель быстро устареет.
+  lastMessageFrom?: MessageSender;
+  lastMessageAt?: string;
 }
 
 export type MessageSender = "patient" | "ai" | "coordinator";
