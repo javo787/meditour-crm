@@ -3,6 +3,7 @@
 import { signOut, useSession } from "next-auth/react";
 import { LogOut } from "lucide-react";
 
+import { InstallAppButton } from "@/components/layout/install-app-button";
 import { MobileNav } from "@/components/layout/mobile-nav";
 import { ThemeToggle } from "@/components/layout/theme-toggle";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -36,6 +37,7 @@ export function Topbar() {
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-2">
+        <InstallAppButton />
         <ThemeToggle />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>

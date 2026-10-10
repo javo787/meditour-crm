@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffffff">
+  <title>Нет соединения · Meditur CRM</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+      padding: 24px; background: #fff; color: #1b2a2f; text-align: center;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+    }
+    main { max-width: 340px; }
+    img { width: 180px; height: auto; margin-bottom: 24px; }
+    h1 { font-size: 20px; margin: 0 0 8px; }
+    p { margin: 0 0 24px; color: #5b6b70; line-height: 1.5; font-size: 15px; }
+    button {
+      border: 0; border-radius: 10px; padding: 12px 22px; font-size: 15px; font-weight: 600;
+      background: #232a8c; color: #fff; cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <img src="/brand/logo-full.png" alt="Meditur HBG">
+    <h1>Нет соединения</h1>
+    <p>Проверьте интернет — данные пациентов не хранятся на устройстве, поэтому без сети CRM не откроется.</p>
+    <button type="button" onclick="location.reload()">Повторить</button>
+  </main>
+  <script>
+    // как только сеть вернулась — сразу открываем CRM, без ручного нажатия
+    window.addEventListener("online", function () { location.reload(); });
+  </script>
+</body>
+</html>
