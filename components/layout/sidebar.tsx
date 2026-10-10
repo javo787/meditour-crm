@@ -5,9 +5,10 @@ import { usePathname } from "next/navigation";
 
 import { cn } from "@/lib/utils";
 import { BrandMark } from "@/components/layout/brand-mark";
+import { NavBadge } from "@/components/layout/nav-badge";
 import { NAV_ITEMS } from "@/components/layout/nav-items";
 
-export function Sidebar() {
+export function Sidebar({ dueCount = 0 }: { dueCount?: number }) {
   const pathname = usePathname();
 
   return (
@@ -35,6 +36,7 @@ export function Sidebar() {
             >
               <Icon className="h-4 w-4" />
               {item.label}
+              {item.badge === "due" && <NavBadge count={dueCount} />}
             </Link>
           );
         })}

@@ -17,7 +17,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-export function Topbar() {
+export function Topbar({ dueCount = 0 }: { dueCount?: number }) {
   const { data: session } = useSession();
   const name = session?.user?.name ?? "Координатор";
   const initials = name
@@ -30,7 +30,7 @@ export function Topbar() {
   return (
     <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border bg-card px-3 sm:px-5">
       <div className="flex min-w-0 items-center gap-2">
-        <MobileNav />
+        <MobileNav dueCount={dueCount} />
         {/* На телефоне название приложения и так видно в самой панели меню — тут важнее место для гамбургера */}
         <div className="hidden truncate text-sm text-muted-foreground sm:block">
           Meditur · WhatsApp CRM

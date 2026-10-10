@@ -7,13 +7,14 @@ import { Menu, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { BrandMark } from "@/components/layout/brand-mark";
+import { NavBadge } from "@/components/layout/nav-badge";
 import { NAV_ITEMS } from "@/components/layout/nav-items";
 
 // Sidebar (components/layout/sidebar.tsx) скрыт целиком ниже md — это его
 // замена: кнопка-гамбургер в Topbar + выезжающая панель с теми же
 // NAV_ITEMS. Без этого компонента на телефоне не было бы вообще никакого
 // способа перейти между Воронкой/Лидами/Настройками.
-export function MobileNav() {
+export function MobileNav({ dueCount = 0 }: { dueCount?: number }) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
 
@@ -38,9 +39,15 @@ export function MobileNav() {
         type="button"
         onClick={() => setOpen(true)}
         aria-label="Открыть меню"
-        className="flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"
+        className="relative flex h-9 w-9 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground"
       >
         <Menu className="h-5 w-5" />
+        {dueCount > 0 && (
+          <span
+            className="absolute right-1 top-1 h-2.5 w-2.5 rounded-full bg-destructive ring-2 ring-card"
+            aria-hidden="true"
+          />
+        )}
       </button>
 
       {open && (
@@ -85,6 +92,7 @@ export function MobileNav() {
                   >
                     <Icon className="h-4 w-4" />
                     {item.label}
+                    {item.badge === "due" && <NavBadge count={dueCount} />}
                   </Link>
                 );
               })}

@@ -2,6 +2,7 @@ import { ObjectId, type Collection, type Filter } from "mongodb";
 
 import { getDb } from "@/lib/mongodb";
 import { createLogger } from "@/lib/logger";
+import { DEFAULT_CRM_TIMEZONE, endOfDayInZone } from "@/lib/touches";
 import type { CaseAssistantMessage, CaseAssistantRole, ChatMessage, Lead, MessageSender, Stage } from "@/lib/types";
 
 const log = createLogger("db");
@@ -165,6 +166,25 @@ export async function getLeads(filter?: {
 
   const docs = await col.find(mongoFilter).sort({ createdAt: -1 }).toArray();
   return docs.map(toLead);
+}
+
+/**
+ * Сколько активных лидов с касанием «сегодня или раньше» — число в меню и
+ * на значке приложения. Даты хранятся как ISO (UTC), поэтому сравнение строк
+ * корректно. Никогда не бросает: сбой БД не должен ломать весь layout.
+ */
+export async function getDueTouchCount(now: Date = new Date()): Promise<number> {
+  try {
+    const cutoff = endOfDayInZone(now, process.env.CRM_TIMEZONE || DEFAULT_CRM_TIMEZONE);
+    const col = await leadsCollection();
+    return await col.countDocuments({
+      stage: { $nin: ["won", "declined"] },
+      nextTouch: { $lte: cutoff.toISOString() },
+    });
+  } catch (err) {
+    log.error("getDueTouchCount failed", { err: String(err) });
+    return 0;
+  }
 }
 
 export async function getLeadsByStage(): Promise<Record<Stage, Lead[]>> {
