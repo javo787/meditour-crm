@@ -1,6 +1,8 @@
 // Обёртка над Evolution API (шлюз WhatsApp из Этапа 1 плана).
 // Эндпоинты и формат подтверждены по документации/issue-трекеру Evolution API v2:
-// POST /message/sendText/{instance}              — отправка текста, плоское тело { number, text }
+// POST /message/sendText/{instance}              — отправка текста, плоское тело { number, text, delay? }
+//   delay (мс) — Evolution сам показывает «печатает…» это время и только потом шлёт
+//   сообщение (документация v2: «Presence time in milliseconds before sending message»)
 // POST /chat/getBase64FromMediaMessage/{instance} — расшифровка медиа в base64
 
 import { createLogger } from "@/lib/logger";
@@ -25,12 +27,14 @@ async function sendTextOnce(
   apiKey: string,
   instance: string,
   number: string,
-  text: string
+  text: string,
+  typingDelayMs?: number
 ): Promise<void> {
   const res = await fetch(`${baseUrl}/message/sendText/${instance}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", apikey: apiKey },
-    body: JSON.stringify({ number, text }),
+    // delay === undefined → ключ не попадает в JSON, тело остаётся прежним
+    body: JSON.stringify({ number, text, delay: typingDelayMs }),
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
@@ -44,7 +48,12 @@ async function sendTextOnce(
 // окончательным провалом (ИИ на паузу, "не доставлено") — 3 ручных
 // сообщения подряд падали с одной и той же ошибкой ровно так. Теперь
 // пробуем ещё дважды с паузой, прежде чем сдаться.
-export async function sendWhatsAppText(number: string, text: string, requestId?: string): Promise<void> {
+export async function sendWhatsAppText(
+  number: string,
+  text: string,
+  requestId?: string,
+  options?: { typingDelayMs?: number }
+): Promise<void> {
   const logger = requestId ? log.child(requestId) : log;
   const { baseUrl, apiKey, instance } = getConfig();
   logger.info("sendText: отправка запроса", {
@@ -52,6 +61,7 @@ export async function sendWhatsAppText(number: string, text: string, requestId?:
     instance,
     number,
     textLength: text.length,
+    typingDelayMs: options?.typingDelayMs,
   });
 
   const MAX_ATTEMPTS = 3;
@@ -59,7 +69,7 @@ export async function sendWhatsAppText(number: string, text: string, requestId?:
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     try {
-      await sendTextOnce(baseUrl, apiKey, instance, number, text);
+      await sendTextOnce(baseUrl, apiKey, instance, number, text, options?.typingDelayMs);
       logger.info("sendText: успешно отправлено", { attempt });
       return;
     } catch (err) {

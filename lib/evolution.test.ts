@@ -33,6 +33,24 @@ describe("sendWhatsAppText", () => {
     );
   });
 
+  it("передаёт delay (время «печатает…») в теле запроса, только если задан", async () => {
+    process.env.EVOLUTION_API_URL = "http://api.evolution.local";
+    process.env.EVOLUTION_API_KEY = "test-api-key";
+    process.env.EVOLUTION_INSTANCE = "test-instance";
+
+    const { sendWhatsAppText } = await import("./evolution");
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 200 });
+
+    await sendWhatsAppText("79991234567", "Привет", "req-1", { typingDelayMs: 2500 });
+    const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+    expect(body).toEqual({ number: "79991234567", text: "Привет", delay: 2500 });
+
+    (global.fetch as jest.Mock).mockClear();
+    await sendWhatsAppText("79991234567", "Привет", "req-2");
+    const body2 = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+    expect(body2).not.toHaveProperty("delay");
+  });
+
   it("should successfully send text message", async () => {
     process.env.EVOLUTION_API_URL = "http://api.evolution.local";
     process.env.EVOLUTION_API_KEY = "test-api-key";
