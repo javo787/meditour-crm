@@ -13,6 +13,7 @@ import { PhoneLink } from "@/components/leads/phone-link";
 import { TagChip } from "@/components/leads/tag-chip";
 import { WaitingBadge } from "@/components/leads/waiting-badge";
 import { getWaitingBadge } from "@/lib/status";
+import { isActiveLead } from "@/lib/touches";
 import { cn } from "@/lib/utils";
 import type { Lead } from "@/lib/types";
 
@@ -25,7 +26,7 @@ export function KanbanCardContent({
   dragging?: boolean;
   onClick?: () => void;
 }) {
-  const overdue = isPast(new Date(lead.nextTouch));
+  const overdue = isActiveLead(lead) && isPast(new Date(lead.nextTouch));
   const initials = lead.name
     .split(" ")
     .map((p) => p[0])

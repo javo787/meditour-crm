@@ -47,6 +47,11 @@ export interface Lead {
   // и не должно быть ручного управления, иначе показатель быстро устареет.
   lastMessageFrom?: MessageSender;
   lastMessageAt?: string;
+  // «Без ответа»: координатор закрыл лид, потому что пациент замолчал. Такой
+  // лид не показывается в «Касаниях» и не попадает в счётчик. Сбрасывается
+  // автоматически, когда пациент пишет снова (см. addMessage в lib/db.ts), и
+  // когда координатор вручную назначает новую дату касания.
+  noResponse?: boolean;
 }
 
 export type MessageSender = "patient" | "ai" | "coordinator";

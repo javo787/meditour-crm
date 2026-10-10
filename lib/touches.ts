@@ -13,8 +13,9 @@ export type TouchBucket = "overdue" | "today" | "tomorrow" | "week" | "later";
 
 export const TOUCH_BUCKETS: TouchBucket[] = ["overdue", "today", "tomorrow", "week", "later"];
 
-export function isActiveLead(lead: Pick<Lead, "stage">): boolean {
-  return lead.stage !== "won" && lead.stage !== "declined";
+/** Лид, по которому ещё нужны касания: не закрыт (выигран/отказ) и не помечен «без ответа». */
+export function isActiveLead(lead: Pick<Lead, "stage" | "noResponse">): boolean {
+  return lead.stage !== "won" && lead.stage !== "declined" && !lead.noResponse;
 }
 
 /**

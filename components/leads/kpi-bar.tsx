@@ -5,6 +5,8 @@ import { cn } from "@/lib/utils";
 import type { Lead, Stage } from "@/lib/types";
 import { isPast } from "date-fns";
 
+import { isActiveLead } from "@/lib/touches";
+
 function StatCard({
   icon: Icon,
   label,
@@ -46,7 +48,7 @@ export function KpiBar({ columns }: { columns: Record<Stage, Lead[]> }) {
   const declined = columns.declined.length;
   const inProgress = total - won - declined;
   const overdue = all.filter(
-    (l) => l.stage !== "won" && l.stage !== "declined" && isPast(new Date(l.nextTouch))
+    (l) => isActiveLead(l) && isPast(new Date(l.nextTouch))
   ).length;
   const conversion = total > 0 ? Math.round((won / total) * 100) : 0;
 

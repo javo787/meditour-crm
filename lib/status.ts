@@ -40,6 +40,7 @@ export function stageLabel(stage: Stage): string {
 // это никогда не устаревает, потому что нечего забывать проставлять.
 export function getWaitingBadge(lead: Lead): { label: string; tone: "urgent" | "neutral" } | null {
   if (lead.stage === "won" || lead.stage === "declined") return null;
+  if (lead.noResponse) return { label: "Без ответа", tone: "neutral" };
   if (!lead.lastMessageFrom) return null;
   if (lead.lastMessageFrom === "patient") {
     return { label: "Ждёт ответа от нас", tone: "urgent" };

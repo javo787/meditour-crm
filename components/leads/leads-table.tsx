@@ -21,6 +21,7 @@ import { PhoneLink } from "@/components/leads/phone-link";
 import { TagChip } from "@/components/leads/tag-chip";
 import { WaitingBadge } from "@/components/leads/waiting-badge";
 import { getWaitingBadge, STAGE_STYLES, stageLabel } from "@/lib/status";
+import { isActiveLead } from "@/lib/touches";
 import { cn } from "@/lib/utils";
 import type { Lead } from "@/lib/types";
 
@@ -65,7 +66,7 @@ const columns: ColumnDef<Lead>[] = [
     header: "Дата касания",
     cell: ({ row }) => {
       const date = new Date(row.original.nextTouch);
-      const overdue = isPast(date);
+      const overdue = isActiveLead(row.original) && isPast(date);
       return (
         <span className={cn("text-sm", overdue && "font-medium text-destructive")}>
           {format(date, "d MMMM", { locale: ru })}
@@ -152,8 +153,7 @@ export function LeadsTable({ data }: { data: Lead[] }) {
       <div className="flex flex-1 flex-col gap-2 overflow-y-auto md:hidden">
         {rows.map((row) => {
           const lead = row.original;
-          const overdue =
-            lead.stage !== "won" && lead.stage !== "declined" && isPast(new Date(lead.nextTouch));
+          const overdue = isActiveLead(lead) && isPast(new Date(lead.nextTouch));
           return (
             <Card
               key={row.id}

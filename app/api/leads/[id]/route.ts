@@ -20,6 +20,7 @@ const patchSchema = z.object({
     .optional(),
   aiPaused: z.boolean().optional(),
   nextTouch: z.string().datetime({ offset: true }).optional(),
+  noResponse: z.boolean().optional(),
   notes: z.string().max(4000).optional(),
   declinedReason: z.string().max(500).optional(),
   source: z.string().max(200).optional(),
@@ -57,8 +58,14 @@ export async function PATCH(
   const enteringEstimateSent =
     parsed.data.stage === "estimate_sent" && before.stage !== "estimate_sent";
 
+  // Новая дата касания, назначенная вручную, значит «напомните мне» — лид
+  // снова в работе, даже если до этого был помечен «без ответа».
+  const reviveByNextTouch =
+    parsed.data.nextTouch !== undefined && parsed.data.noResponse === undefined;
+
   const lead = await updateLead(params.id, {
     ...parsed.data,
+    ...(reviveByNextTouch ? { noResponse: false } : {}),
     ...(enteringEstimateSent
       ? { estimateSentAt: new Date().toISOString(), followUpStep: 0 }
       : {}),

@@ -39,6 +39,13 @@ describe('getWaitingBadge', () => {
     expect(getWaitingBadge(makeLead())).toBeNull();
   });
 
+  it('returns "без ответа" for leads marked noResponse, even if the patient wrote last', () => {
+    expect(getWaitingBadge(makeLead({ noResponse: true, lastMessageFrom: 'patient' }))).toEqual({
+      label: 'Без ответа',
+      tone: 'neutral',
+    });
+  });
+
   it('returns null for closed leads (won/declined) regardless of lastMessageFrom', () => {
     expect(getWaitingBadge(makeLead({ stage: 'won', lastMessageFrom: 'patient' }))).toBeNull();
     expect(getWaitingBadge(makeLead({ stage: 'declined', lastMessageFrom: 'patient' }))).toBeNull();

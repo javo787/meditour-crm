@@ -35,6 +35,7 @@ interface LeadDoc {
   tags?: string[];
   lastMessageFrom?: MessageSender;
   lastMessageAt?: string;
+  noResponse?: boolean;
 }
 
 interface MessageDoc {
@@ -115,6 +116,7 @@ function toLead(doc: LeadDoc): Lead {
     tags: doc.tags,
     lastMessageFrom: doc.lastMessageFrom,
     lastMessageAt: doc.lastMessageAt,
+    noResponse: doc.noResponse,
   };
 }
 
@@ -179,6 +181,7 @@ export async function getDueTouchCount(now: Date = new Date()): Promise<number> 
     const col = await leadsCollection();
     return await col.countDocuments({
       stage: { $nin: ["won", "declined"] },
+      noResponse: { $ne: true },
       nextTouch: { $lte: cutoff.toISOString() },
     });
   } catch (err) {
@@ -270,6 +273,7 @@ export async function updateLead(
       | "followUpStep"
       | "anamnesis"
       | "tags"
+      | "noResponse"
     >
   >
 ): Promise<Lead | undefined> {
@@ -322,7 +326,15 @@ export async function addMessage(
     const leadsCol = await leadsCollection();
     await leadsCol.updateOne(
       { _id: new ObjectId(leadId) },
-      { $set: { lastMessageFrom: from, lastMessageAt: at } }
+      {
+        $set: {
+          lastMessageFrom: from,
+          lastMessageAt: at,
+          // Пациент снова написал — лид «без ответа» оживает и возвращается
+          // в «Касания» сам, без ручных действий.
+          ...(from === "patient" ? { noResponse: false } : {}),
+        },
+      }
     );
   } catch (err) {
     log.error("addMessage: не удалось обновить lastMessageFrom/At на лиде", {

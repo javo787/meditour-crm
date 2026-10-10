@@ -1,4 +1,4 @@
-import { endOfDayInZone, groupTouches, touchBucket } from "./touches";
+import { endOfDayInZone, groupTouches, isActiveLead, touchBucket } from "./touches";
 import type { Lead } from "./types";
 
 function lead(over: Partial<Lead>): Lead {
@@ -31,6 +31,16 @@ describe("touchBucket", () => {
   });
 });
 
+describe("isActiveLead", () => {
+  it("закрытые и «без ответа» не активны", () => {
+    expect(isActiveLead(lead({}))).toBe(true);
+    expect(isActiveLead(lead({ stage: "won" }))).toBe(false);
+    expect(isActiveLead(lead({ stage: "declined" }))).toBe(false);
+    expect(isActiveLead(lead({ noResponse: true }))).toBe(false);
+    expect(isActiveLead(lead({ noResponse: false }))).toBe(true);
+  });
+});
+
 describe("groupTouches", () => {
   it("пропускает закрытые лиды", () => {
     const g = groupTouches(
@@ -38,6 +48,11 @@ describe("groupTouches", () => {
       now
     );
     expect(g.today.map((l) => l.id)).toEqual(["c"]);
+  });
+  it("лиды «без ответа» не попадают ни в одну группу", () => {
+    const g = groupTouches([lead({ id: "x", noResponse: true }), lead({ id: "y" })], now);
+    const all = Object.values(g).flat().map((l) => l.id);
+    expect(all).toEqual(["y"]);
   });
   it("сначала те, кому нужно ответить, затем по дате", () => {
     const g = groupTouches(

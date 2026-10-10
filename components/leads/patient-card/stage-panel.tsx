@@ -19,6 +19,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { toNextTouchIso } from "@/lib/next-touch";
 import { STAGES } from "@/lib/status";
+import { isActiveLead } from "@/lib/touches";
 import type { Lead, Stage } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -40,9 +41,10 @@ export function StagePanel({ lead }: { lead: Lead }) {
   const [saving, setSaving] = useState(false);
   const [nextTouch, setNextTouch] = useState(lead.nextTouch);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [noResponse, setNoResponse] = useState(Boolean(lead.noResponse));
   const router = useRouter();
   const nextTouchDate = new Date(nextTouch);
-  const overdue = isPast(nextTouchDate);
+  const overdue = isActiveLead({ stage, noResponse }) && isPast(nextTouchDate);
   const sameYear = nextTouchDate.getFullYear() === new Date().getFullYear();
 
   async function patch(body: Record<string, unknown>) {
@@ -73,7 +75,16 @@ export function StagePanel({ lead }: { lead: Lead }) {
     });
     if (!res.ok) throw new Error("Не удалось сохранить дату");
     setNextTouch(iso);
+    // Назначенная вручную дата возвращает лид в «Касания» (то же делает сервер).
+    setNoResponse(false);
     // Канбан/таблица/KPI берут дату с сервера — обновляем их тоже.
+    router.refresh();
+  }
+
+  async function toggleNoResponse() {
+    const next = !noResponse;
+    setNoResponse(next);
+    await patch({ noResponse: next });
     router.refresh();
   }
 
@@ -139,6 +150,22 @@ export function StagePanel({ lead }: { lead: Lead }) {
             />
           </button>
         </div>
+        {stage !== "won" && stage !== "declined" && (
+          <div className="flex items-center justify-between gap-3 text-sm">
+            <span className="shrink-0 text-muted-foreground">Касания</span>
+            <button
+              type="button"
+              onClick={toggleNoResponse}
+              disabled={saving}
+              className={cn(
+                "-mr-1.5 rounded-md px-1.5 py-0.5 text-right transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50",
+                noResponse ? "font-medium text-muted-foreground" : "text-muted-foreground"
+              )}
+            >
+              {noResponse ? "Без ответа · вернуть в касания" : "Нет ответа — убрать из касаний"}
+            </button>
+          </div>
+        )}
         <MetaRow label="Источник" value={lead.source} />
         <MetaRow label="Пост/реклама" value={lead.campaign} />
         <MetaRow label="Город, страна" value={lead.homeLocation} />
