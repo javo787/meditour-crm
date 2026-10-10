@@ -13,6 +13,7 @@ import {
 } from "@/lib/db";
 import { fetchMediaBase64, sendWhatsAppText } from "@/lib/evolution";
 import { askGemini } from "@/lib/gemini";
+import { typingDelayMs } from "@/lib/humanize";
 import { createLogger, newRequestId, Logger } from "@/lib/logger";
 import { resolveWhatsAppJid } from "@/lib/whatsapp-jid";
 
@@ -408,8 +409,9 @@ async function processBatchInner(leadId: string, phone: string, log: Logger, req
 
   // 1) Ответ ИИ. Если Gemini не ответил — координатор должен увидеть это в
   // переписке, а не гадать, почему бот молчит.
-  let reply: string;
+  let replyMessages: string[];
   let shouldPause: boolean;
+  let suppressed: "empty" | "duplicate" | undefined;
   try {
     // Пометки и недоставленные ответы в контекст не берём: пациент их не
     // видел, а модель иначе будет считать, что уже это сказала.
@@ -424,9 +426,16 @@ async function processBatchInner(leadId: string, phone: string, log: Logger, req
     });
 
     const result = await askGemini({ history: olderHistory, items, requestId });
-    reply = result.text;
-    shouldPause = result.shouldPause;
-    log.info("processBatch: Gemini вернул ответ", { leadId, replyLength: reply.length, shouldPause });
+    replyMessages = result.messages;
+    shouldPause = result.handoff;
+    suppressed = result.suppressed;
+    log.info("processBatch: Gemini вернул ответ", {
+      leadId,
+      bubbles: replyMessages.length,
+      language: result.language,
+      shouldPause,
+      suppressed,
+    });
   } catch (err) {
     log.error("processBatch: ИИ не смог сформировать ответ — сообщения пациента сохранены, нужен ответ вручную", {
       leadId,
@@ -437,35 +446,97 @@ async function processBatchInner(leadId: string, phone: string, log: Logger, req
     return;
   }
 
-  const savedReply = await addMessage(leadId, "ai", reply);
-  log.info("processBatch: ответ ИИ сохранён в историю", { leadId });
-
-  // 2) Отправка. Раньше ошибка здесь только уходила в лог Render — в CRM
-  // ответ выглядел доставленным, бот молчал, и это никак не было видно.
-  // Теперь: пометка "не доставлено", пауза ИИ (повторять попытки на каждое
-  // сообщение бессмысленно — обычно это проблема канала или адресации, а не
-  // случайный сбой) и явная пометка для координатора.
-  try {
-    await sendWhatsAppText(phone, reply, requestId);
-    log.info("processBatch: ответ отправлен пациенту через Evolution API", { phone });
-  } catch (err) {
-    log.error("processBatch: не удалось отправить ответ пациенту через Evolution API", {
+  // Отправлять нечего: модель дважды подряд не дала текста либо могла бы
+  // только повторить уже сказанное. Вместо жёсткой «запасной» фразы (которая
+  // уходила всем одинаковой и сразу выдавала бота) — передаём диалог
+  // координатору с понятной пометкой.
+  if (replyMessages.length === 0) {
+    await updateLead(leadId, { aiPaused: true });
+    await addSystemNote(
       leadId,
-      phone,
-      message: err instanceof Error ? err.message : String(err),
+      shouldPause
+        ? "— ИИ автоматически поставлен на паузу —"
+        : suppressed === "duplicate"
+        ? "— ИИ мог только повторить уже сказанное. ИИ поставлен на паузу — ответьте вручную —"
+        : "— ИИ не сформировал ответ. ИИ поставлен на паузу — ответьте вручную —",
+      log
+    );
+    log.warn("processBatch: отправлять нечего — ИИ поставлен на паузу, диалог у координатора", {
+      leadId,
+      suppressed,
+      shouldPause,
     });
-    try {
-      await markMessageDeliveryFailed(savedReply.id);
-      await updateLead(leadId, { aiPaused: true });
-    } catch (markErr) {
-      log.error("processBatch: не удалось пометить сообщение как недоставленное", {
-        leadId,
-        message: markErr instanceof Error ? markErr.message : String(markErr),
-      });
-    }
-    await addSystemNote(leadId, "— Ответ ИИ не доставлен в WhatsApp. ИИ поставлен на паузу — ответьте вручную —", log);
     return;
   }
+
+  // 2) Отправка пузырями, как печатает живой человек: у каждого сообщения —
+  // своё «печатает…» (параметр delay в Evolution API, время зависит от
+  // длины). Каждый пузырь сохраняем в историю ПЕРЕД отправкой, поэтому в
+  // CRM видно ровно то, что реально пытались отправить. Раньше ошибка здесь
+  // только уходила в лог Render — в CRM ответ выглядел доставленным; теперь:
+  // пометка "не доставлено" на конкретном пузыре, пауза ИИ (повторять
+  // попытки на каждое сообщение бессмысленно — обычно это проблема канала
+  // или адресации, а не случайный сбой) и явная пометка для координатора.
+  let delivered = 0;
+  let interrupted = false;
+  for (let i = 0; i < replyMessages.length; i++) {
+    const bubble = replyMessages[i];
+
+    // Пока бот «печатал», пациент мог дописать или координатор — перехватить
+    // диалог. Живой человек в этом случае не договаривает заготовленное, а
+    // читает новое — поэтому оставшиеся пузыри не отправляем (новое
+    // сообщение пациента уже обработает свежая пачка с актуальной историей).
+    if (i > 0) {
+      let coordinatorTookOver = false;
+      try {
+        coordinatorTookOver = Boolean((await getLead(leadId))?.aiPaused);
+      } catch {
+        // сбой чтения не должен рвать отправку — просто продолжаем
+      }
+      if (pendingBatches.has(leadId) || coordinatorTookOver) {
+        log.info("processBatch: отправка прервана — новое сообщение пациента или ИИ поставлен на паузу", {
+          leadId,
+          sent: i,
+          total: replyMessages.length,
+          newPatientMessage: pendingBatches.has(leadId),
+          coordinatorTookOver,
+        });
+        interrupted = true;
+        break;
+      }
+    }
+
+    const saved = await addMessage(leadId, "ai", bubble);
+    try {
+      await sendWhatsAppText(phone, bubble, requestId, { typingDelayMs: typingDelayMs(bubble) });
+      delivered++;
+    } catch (err) {
+      log.error("processBatch: не удалось отправить ответ пациенту через Evolution API", {
+        leadId,
+        phone,
+        bubbleIndex: i,
+        delivered,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      try {
+        await markMessageDeliveryFailed(saved.id);
+        await updateLead(leadId, { aiPaused: true });
+      } catch (markErr) {
+        log.error("processBatch: не удалось пометить сообщение как недоставленное", {
+          leadId,
+          message: markErr instanceof Error ? markErr.message : String(markErr),
+        });
+      }
+      await addSystemNote(leadId, "— Ответ ИИ не доставлен в WhatsApp. ИИ поставлен на паузу — ответьте вручную —", log);
+      return;
+    }
+  }
+  log.info("processBatch: ответ отправлен пациенту через Evolution API", {
+    phone,
+    delivered,
+    total: replyMessages.length,
+    interrupted,
+  });
 
   if (lead.stage === "new") {
     await updateLead(leadId, { stage: "first_contact" });
@@ -476,10 +547,12 @@ async function processBatchInner(leadId: string, phone: string, log: Logger, req
   // сразу после сбора документов (см. lib/playbook.ts). До этого coordinator
   // ставил aiPaused только вручную; теперь ИИ может сделать это сам, тем же
   // флагом, которым уже управляет вся остальная логика (webhook, chat-panel).
-  if (shouldPause) {
+  // Если отправку прервало новое сообщение пациента, финальную фразу мы не
+  // договорили — паузу не ставим, пусть следующий ход решит заново.
+  if (shouldPause && !interrupted) {
     await updateLead(leadId, { aiPaused: true });
     await addMessage(leadId, "ai", "— ИИ автоматически поставлен на паузу —");
-    log.info("processBatch: ИИ поставлен на паузу автоматически (pauseForHumanHandoff)", { leadId });
+    log.info("processBatch: ИИ поставлен на паузу автоматически (handoff)", { leadId });
   }
 }
 

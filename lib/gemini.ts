@@ -2,6 +2,7 @@ import type { ChatMessage } from "@/lib/types";
 import { createLogger } from "@/lib/logger";
 import { MEDITUR_SYSTEM_PROMPT } from "@/lib/playbook";
 import { MEDICAL_OPINION_SYSTEM_PROMPT } from "@/lib/medical-opinion-prompt";
+import { dropDuplicateBubbles, parseModelReply, type DialogLanguage } from "@/lib/humanize";
 
 const log = createLogger("gemini");
 
@@ -49,16 +50,67 @@ function roleFor(from: ChatMessage["from"]): "user" | "model" {
   return from === "ai" ? "model" : "user";
 }
 
-// Единственная функция, которую пока может вызвать WhatsApp-бот — сигнал
-// "передаю диалог координатору" (см. lib/playbook.ts, СБОР ДОКУМЕНТОВ И
-// ПЕРЕДАЧА КООРДИНАТОРУ + КОГДА ПЕРЕДАВАТЬ ЧЕЛОВЕКУ). Описание намеренно
-// строгое, с отрицательными примерами — свободный AUTO-режим вызова функций
-// иначе легко начинает срабатывать слишком охотно.
-const PAUSE_FUNCTION_DECLARATION: GeminiFunctionDeclaration = {
-  name: "pauseForHumanHandoff",
-  description:
-    "Call this together with your final message ONLY in exactly two situations, never speculatively and never as a default way to end a message. (1) You just told the patient you are passing along the medical documents/history they shared to the Indian doctors and will get back to them once there's a reply — call this only once the patient has actually shared what they have (not while you are still asking questions or waiting for something from them). (2) You are handing off per the playbook's КОГДА ПЕРЕДАВАТЬ ЧЕЛОВЕКУ rule (sensitive topic, patient explicitly asked for a human, patient is upset, or the request is outside this playbook). Do not call it because the conversation is quiet, because you are unsure how to answer, or for any reason other than these two. CRITICAL: this call must always be accompanied by real message text in the same response — never call this function with an empty or missing text part, the patient still needs to receive a proper closing message.",
+// Формат ответа WhatsApp-бота — structured output (JSON по схеме), а не
+// свободный текст + function calling. Почему так:
+//  • messages — это и есть WhatsApp-пузыри: модель сама решает, где одна
+//    мысль заканчивается и начинается следующая, а код не гадает по \n;
+//  • minItems: 1 лишает модель возможности «вызвать функцию без текста» —
+//    именно из-за этого раньше пациентам уходила жёсткая запасная строка;
+//  • handoff — тот же сигнал «передаю координатору», что был у функции
+//    pauseForHumanHandoff, но без tools: никакой схемы функции, которая могла
+//    уронить все ответы (см. историю: неверный регистр в схеме → 400);
+//  • language идёт ПЕРВЫМ полем (propertyOrdering): модель сначала фиксирует
+//    язык диалога, потом пишет текст на нём — это лечит «русская реплика
+//    посреди таджикского диалога».
+// Если запрос со схемой не прошёл, generateWithFallback повторит его без
+// схемы, а parseModelReply разберёт обычный текст — ответ не теряется.
+const REPLY_RESPONSE_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    language: {
+      type: "STRING",
+      format: "enum",
+      enum: ["tg", "ru", "uz"],
+      description:
+        "Language of THIS reply, judged from the patient's latest coherent sentences (not isolated loanwords such as diagnoses or exam names): tg = Tajik, ru = Russian, uz = Uzbek. The very first reply to a new patient is always tg.",
+    },
+    messages: {
+      type: "ARRAY",
+      minItems: 1,
+      maxItems: 4,
+      items: { type: "STRING" },
+      description:
+        "The reply as 1-3 separate WhatsApp messages in the order they are sent. Each message is one short thought, written like a person typing in a chat: no lists, no markdown, no headers, no line breaks inside a message. Never repeat a thought, greeting, self-introduction or thank-you that already appears earlier in the conversation. Always at least one message, even when handoff is true.",
+    },
+    handoff: {
+      type: "BOOLEAN",
+      description:
+        "Set true ONLY in exactly two situations, never speculatively and never as a default way to end a message. (1) The messages you are writing now tell the patient you are passing the medical documents/history they shared to the Indian doctors and will get back once there's a reply — only once the patient has actually shared what they have (not while you are still asking questions or waiting for something from them). (2) You are handing off per the playbook's КОГДА ПЕРЕДАВАТЬ ЧЕЛОВЕКУ rule (sensitive topic, patient explicitly asked for a human, patient is upset, or the request is outside this playbook). Do not set it because the conversation is quiet or because you are unsure how to answer. The closing message itself always goes into messages.",
+    },
+  },
+  required: ["language", "messages", "handoff"],
+  propertyOrdering: ["language", "messages", "handoff"],
 };
+
+const REPLY_GENERATION_CONFIG = {
+  responseMimeType: "application/json",
+  responseSchema: REPLY_RESPONSE_SCHEMA,
+};
+
+// Служебные подсказки модели при пустом ответе / повторе. Добавляются как
+// ещё одна часть в последнее сообщение пользователя (а не отдельным ходом —
+// чтобы не плодить два user-хода подряд) и в историю не сохраняются.
+const NUDGE_EMPTY =
+  "(Служебная подсказка, пациент её не видит.) В прошлый раз ты не вернул ни одного сообщения. Верни хотя бы одно короткое сообщение пациенту — по существу его последнего сообщения, на языке диалога.";
+const NUDGE_DUPLICATE =
+  "(Служебная подсказка, пациент её не видит.) Всё, что ты собирался написать, ты уже говорил пациенту раньше в этом диалоге. Не повторяй ни одну прежнюю мысль, приветствие, представление или благодарность. Напиши только то, что действительно ново и относится к его последнему сообщению. Если нового сказать нечего — одним коротким сообщением задай один конкретный уточняющий вопрос по его последнему сообщению.";
+
+function withNudge(contents: any[], nudge: string): any[] {
+  const copy = contents.slice();
+  const last = copy[copy.length - 1];
+  copy[copy.length - 1] = { ...last, parts: [...last.parts, { text: nudge }] };
+  return copy;
+}
 
 async function callModel(
   model: string,
@@ -66,7 +118,8 @@ async function callModel(
   systemInstruction: string,
   tools: GeminiTools | undefined,
   cachedContentName: string | undefined,
-  logger: any
+  logger: any,
+  generationConfig?: Record<string, unknown>
 ): Promise<
   | { ok: true; res: Response }
   | { ok: false; status: number; body: string; retryable: boolean }
@@ -86,6 +139,7 @@ async function callModel(
             ? { cachedContent: cachedContentName }
             : { systemInstruction: { parts: [{ text: systemInstruction }] } }),
           ...(tools ? { tools } : {}),
+          ...(generationConfig ? { generationConfig } : {}),
         }),
       }
     );
@@ -163,7 +217,7 @@ async function generateWithFallback(
   contents: any[],
   systemInstruction: string,
   logger: any,
-  options?: { tools?: GeminiTools; cacheable?: boolean }
+  options?: { tools?: GeminiTools; cacheable?: boolean; generationConfig?: Record<string, unknown> }
 ): Promise<{ text: string; functionCall?: GeminiFunctionCall }> {
   if (!API_KEY) {
     logger.error("GEMINI_API_KEY не задан");
@@ -181,7 +235,15 @@ async function generateWithFallback(
       // Кэш создан только под MODELS[0] — для остальных моделей (и если
       // кэш не создался) шлём инструкцию как раньше, инлайном.
       const useCache = cachedContentName && model === MODELS[0] ? cachedContentName : undefined;
-      let result = await callModel(model, contents, systemInstruction, options?.tools, useCache, logger);
+      let result = await callModel(
+        model,
+        contents,
+        systemInstruction,
+        options?.tools,
+        useCache,
+        logger,
+        options?.generationConfig
+      );
 
       // Если запрос с кэшем не удался (например, кэш протух или был
       // удалён на стороне Google раньше TTL) — не сдаёмся и не прыгаем
@@ -193,16 +255,24 @@ async function generateWithFallback(
           model,
           status: result.status,
         });
-        result = await callModel(model, contents, systemInstruction, options?.tools, undefined, logger);
+        result = await callModel(
+          model,
+          contents,
+          systemInstruction,
+          options?.tools,
+          undefined,
+          logger,
+          options?.generationConfig
+        );
       }
 
-      // Та же логика для tools: если запрос с функциями не удался (например,
-      // из-за ошибки в схеме — именно так однажды упал вообще весь ответ
-      // пациентам), пробуем без них. Потерять на этом ответе
-      // pauseForHumanHandoff — не страшно, а вот отвечать пациенту вообще
-      // нечем — критично.
-      if (!result.ok && options?.tools) {
-        logger.warn("Gemini: запрос с tools не удался, пробуем без функций", {
+      // Та же логика для tools и схемы ответа: если запрос с ними не удался
+      // (например, из-за ошибки в схеме — именно так однажды упал вообще весь
+      // ответ пациентам), пробуем без них. Потерять на этом ответе
+      // handoff/разбивку на пузыри — не страшно (parseModelReply разберёт
+      // обычный текст), а вот отвечать пациенту вообще нечем — критично.
+      if (!result.ok && (options?.tools || options?.generationConfig)) {
+        logger.warn("Gemini: запрос с tools/схемой ответа не удался, пробуем без них", {
           model,
           status: result.status,
         });
@@ -284,7 +354,14 @@ export async function askGemini(params: {
     audio?: { base64: string; mimeType: string };
   }>;
   requestId?: string;
-}): Promise<{ text: string; shouldPause: boolean }> {
+}): Promise<{
+  // Готовые к отправке WhatsApp-сообщения (пузыри) по порядку. Пусто только
+  // если suppressed задан — тогда отправлять нечего и решает координатор.
+  messages: string[];
+  handoff: boolean;
+  language?: DialogLanguage;
+  suppressed?: "empty" | "duplicate";
+}> {
   const logger = params.requestId ? log.child(params.requestId) : log;
 
   const contents = params.history.map((m) => ({
@@ -333,31 +410,70 @@ export async function askGemini(params: {
     totalTextLength,
   });
 
-  const { text, functionCall } = await generateWithFallback(contents, MEDITUR_SYSTEM_PROMPT, logger, {
-    tools: [{ functionDeclarations: [PAUSE_FUNCTION_DECLARATION] }],
-    cacheable: true,
+  // Что пациент уже слышал от нас — для защиты от повторов. Системные
+  // пометки и недоставленные ответы фильтрует вызывающий код (webhook).
+  const recentAiTexts = params.history.filter((m) => m.from === "ai").map((m) => m.text);
+
+  const generate = async (nudge?: string) => {
+    const { text } = await generateWithFallback(
+      nudge ? withNudge(contents, nudge) : contents,
+      MEDITUR_SYSTEM_PROMPT,
+      logger,
+      { cacheable: true, generationConfig: REPLY_GENERATION_CONFIG }
+    );
+    return parseModelReply(text);
+  };
+
+  let reply = await generate();
+  let handoff = reply.handoff;
+
+  // (а) Модель не вернула ни одного сообщения (блок безопасности,
+  // MAX_TOKENS, пустой JSON). Раньше здесь подставлялась одна жёсткая
+  // русская строка — она уходила ВСЕМ пациентам одинаково и даже на
+  // таджикском диалоге. Теперь: один повтор с подсказкой, а если и он
+  // пустой — ничего не шлём, диалог уходит координатору (см. webhook).
+  if (reply.messages.length === 0) {
+    logger.warn("askGemini: модель не вернула ни одного сообщения — один повтор с подсказкой", { handoff });
+    reply = await generate(NUDGE_EMPTY);
+    handoff = handoff || reply.handoff;
+  }
+
+  // (б) Антидубль. Пузыри, повторяющие уже сказанное (или друг друга),
+  // просто не отправляем — чаще всего это приклеенная в конец «закрывающая»
+  // фраза. Если выброшено ВСЁ — один раз просим сказать что-то новое.
+  let produced = reply.messages.length;
+  let { kept, dropped } = dropDuplicateBubbles(reply.messages, recentAiTexts);
+  if (produced > 0 && kept.length === 0) {
+    logger.warn("askGemini: весь ответ повторяет уже сказанное — один повтор с подсказкой", {
+      dropped: dropped.length,
+    });
+    reply = await generate(NUDGE_DUPLICATE);
+    handoff = handoff || reply.handoff;
+    produced = reply.messages.length;
+    ({ kept, dropped } = dropDuplicateBubbles(reply.messages, recentAiTexts));
+  }
+
+  if (dropped.length > 0) {
+    logger.info("askGemini: отброшены повторяющиеся пузыри", { dropped: dropped.length, kept: kept.length });
+  }
+  if (handoff) {
+    logger.info("askGemini: модель запросила передачу координатору (handoff) — диалог будет поставлен на паузу");
+  }
+
+  const suppressed: "empty" | "duplicate" | undefined =
+    kept.length > 0 ? undefined : produced === 0 ? "empty" : "duplicate";
+  if (suppressed) {
+    logger.warn("askGemini: отправлять нечего — ответ подавлен", { suppressed, handoff });
+  }
+
+  logger.info("askGemini: ответ готов", {
+    bubbles: kept.length,
+    structured: reply.structured,
+    language: reply.language,
+    handoff,
   });
 
-  const shouldPause = functionCall?.name === "pauseForHumanHandoff";
-  if (shouldPause) {
-    logger.info("askGemini: модель вызвала pauseForHumanHandoff — передаём диалог координатору");
-  }
-  if (!text) {
-    // Промпт просит вызывать функцию ВМЕСТЕ с текстом, но модель иногда
-    // всё равно вызывает её без единого слова — тогда старый общий
-    // фолбэк ("уточните вопрос") уходил пациенту прямо перед тем, как ИИ
-    // замолкает на паузе, что не имело никакого смысла в этом контексте.
-    logger.warn("askGemini: используется запасная фраза для пациента", { shouldPause });
-  }
-
-  return {
-    text:
-      text ||
-      (shouldPause
-        ? "Спасибо! Мы получили вашу информацию и передаём её нашим специалистам. Как только будет ответ, сразу напишем вам."
-        : "Извините, не получилось сформировать ответ — уточните, пожалуйста, вопрос."),
-    shouldPause,
-  };
+  return { messages: kept, handoff, language: reply.language, suppressed };
 }
 
 // Ассистент подготовки Medical Opinion Request (Этап 4). Промпт — в
