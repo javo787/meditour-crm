@@ -19,6 +19,7 @@ const patchSchema = z.object({
     ])
     .optional(),
   aiPaused: z.boolean().optional(),
+  nextTouch: z.string().datetime({ offset: true }).optional(),
   notes: z.string().max(4000).optional(),
   declinedReason: z.string().max(500).optional(),
   source: z.string().max(200).optional(),

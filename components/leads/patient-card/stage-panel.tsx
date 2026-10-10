@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { format, isPast } from "date-fns";
 import { ru } from "date-fns/locale";
+import { CalendarDays } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,8 +17,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { toNextTouchIso } from "@/lib/next-touch";
 import { STAGES } from "@/lib/status";
 import type { Lead, Stage } from "@/lib/types";
+import { cn } from "@/lib/utils";
+
+import { NextTouchDialog } from "./next-touch-dialog";
 
 function MetaRow({ label, value }: { label: string; value?: string }) {
   if (!value) return null;
@@ -32,7 +38,12 @@ export function StagePanel({ lead }: { lead: Lead }) {
   const [stage, setStage] = useState<Stage>(lead.stage);
   const [declinedReason, setDeclinedReason] = useState(lead.declinedReason ?? "");
   const [saving, setSaving] = useState(false);
-  const overdue = isPast(new Date(lead.nextTouch));
+  const [nextTouch, setNextTouch] = useState(lead.nextTouch);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const router = useRouter();
+  const nextTouchDate = new Date(nextTouch);
+  const overdue = isPast(nextTouchDate);
+  const sameYear = nextTouchDate.getFullYear() === new Date().getFullYear();
 
   async function patch(body: Record<string, unknown>) {
     setSaving(true);
@@ -51,6 +62,19 @@ export function StagePanel({ lead }: { lead: Lead }) {
     const next = value as Stage;
     setStage(next);
     await patch({ stage: next });
+  }
+
+  async function handleNextTouchSave(date: Date) {
+    const iso = toNextTouchIso(date);
+    const res = await fetch(`/api/leads/${lead.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nextTouch: iso }),
+    });
+    if (!res.ok) throw new Error("Не удалось сохранить дату");
+    setNextTouch(iso);
+    // Канбан/таблица/KPI берут дату с сервера — обновляем их тоже.
+    router.refresh();
   }
 
   async function handleReasonBlur() {
@@ -98,14 +122,35 @@ export function StagePanel({ lead }: { lead: Lead }) {
         <MetaRow label="Ответственный" value={lead.assignee} />
         <div className="flex items-center justify-between text-sm">
           <span className="text-muted-foreground">Следующее касание</span>
-          <span className={overdue ? "font-medium text-destructive" : "font-medium"}>
-            {format(new Date(lead.nextTouch), "d MMMM", { locale: ru })}
-          </span>
+          <button
+            type="button"
+            onClick={() => setPickerOpen(true)}
+            aria-label="Изменить дату следующего касания"
+            className="group -mr-1.5 inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <span className={cn("font-medium", overdue && "text-destructive")}>
+              {format(nextTouchDate, sameYear ? "d MMMM" : "d MMMM yyyy", { locale: ru })}
+            </span>
+            <CalendarDays
+              className={cn(
+                "h-3.5 w-3.5 transition-colors group-hover:text-foreground",
+                overdue ? "text-destructive" : "text-muted-foreground"
+              )}
+            />
+          </button>
         </div>
         <MetaRow label="Источник" value={lead.source} />
         <MetaRow label="Пост/реклама" value={lead.campaign} />
         <MetaRow label="Город, страна" value={lead.homeLocation} />
       </CardContent>
+
+      <NextTouchDialog
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        currentValue={nextTouch}
+        patientName={lead.name}
+        onSave={handleNextTouchSave}
+      />
     </Card>
   );
 }
