@@ -2,9 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Stethoscope } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { BrandMark } from "@/components/layout/brand-mark";
 import { NAV_ITEMS } from "@/components/layout/nav-items";
 
 export function Sidebar() {
@@ -13,7 +13,7 @@ export function Sidebar() {
   return (
     <aside className="hidden w-60 shrink-0 flex-col border-r border-border bg-card md:flex">
       <div className="flex h-14 items-center gap-2 border-b border-border px-5">
-        <Stethoscope className="h-5 w-5 text-primary" />
+        <BrandMark size={30} />
         <span className="text-sm font-semibold tracking-tight">Meditur CRM</span>
       </div>
       <nav className="flex flex-1 flex-col gap-1 p-3">

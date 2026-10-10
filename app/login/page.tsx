@@ -3,8 +3,8 @@
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { signIn } from "next-auth/react";
-import { Stethoscope } from "lucide-react";
 
+import { BrandLogo } from "@/components/layout/brand-mark";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -41,9 +41,7 @@ export default function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="items-center text-center">
-          <div className="mb-1 flex h-10 w-10 items-center justify-center rounded-full bg-primary/10">
-            <Stethoscope className="h-5 w-5 text-primary" />
-          </div>
+          <BrandLogo />
           <CardTitle>Meditur CRM</CardTitle>
           <CardDescription>Вход для координаторов</CardDescription>
         </CardHeader>
