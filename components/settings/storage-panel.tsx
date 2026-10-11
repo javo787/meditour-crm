@@ -20,6 +20,7 @@ interface StorageStats {
 
 const LABELS: Record<string, string> = {
   Leads: "Лиды",
+  Settings: "Настройки команды",
   Messages: "Переписка",
   MediaAssets: "Фото и голосовые",
   CaseAssistantMessages: "Medical Opinion Request",

@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { format, isPast } from "date-fns";
 import { ru } from "date-fns/locale";
-import { CalendarDays } from "lucide-react";
+import { CalendarDays, UserCog } from "lucide-react";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -19,10 +19,12 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { toNextTouchIso } from "@/lib/next-touch";
 import { STAGES } from "@/lib/status";
+import { isUnassigned } from "@/lib/team";
 import { isActiveLead } from "@/lib/touches";
 import type { Lead, Stage } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+import { AssigneeDialog, type AssigneeSaveOptions } from "./assignee-dialog";
 import { NextTouchDialog } from "./next-touch-dialog";
 
 function MetaRow({ label, value }: { label: string; value?: string }) {
@@ -42,6 +44,9 @@ export function StagePanel({ lead }: { lead: Lead }) {
   const [nextTouch, setNextTouch] = useState(lead.nextTouch);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [noResponse, setNoResponse] = useState(Boolean(lead.noResponse));
+  const [assignee, setAssignee] = useState(lead.assignee);
+  const [assigneeOpen, setAssigneeOpen] = useState(false);
+  const [assigneeNote, setAssigneeNote] = useState<string | null>(null);
   const router = useRouter();
   const nextTouchDate = new Date(nextTouch);
   const overdue = isActiveLead({ stage, noResponse }) && isPast(nextTouchDate);
@@ -78,6 +83,47 @@ export function StagePanel({ lead }: { lead: Lead }) {
     // Назначенная вручную дата возвращает лид в «Касания» (то же делает сервер).
     setNoResponse(false);
     // Канбан/таблица/KPI берут дату с сервера — обновляем их тоже.
+    router.refresh();
+  }
+
+  // Заметка «назначено ещё N лидам» живёт недолго — это подтверждение, не статус.
+  useEffect(() => {
+    if (!assigneeNote) return;
+    const id = setTimeout(() => setAssigneeNote(null), 8000);
+    return () => clearTimeout(id);
+  }, [assigneeNote]);
+
+  async function handleAssigneeSave(name: string, options: AssigneeSaveOptions) {
+    if (name !== assignee) {
+      const res = await fetch(`/api/leads/${lead.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assignee: name }),
+      });
+      if (!res.ok) throw new Error("Не удалось сохранить ответственного");
+      setAssignee(name);
+    }
+
+    const notes: string[] = [];
+    if (options.makeDefault || options.applyToOthers) {
+      const res = await fetch("/api/team", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(options.makeDefault ? { defaultAssignee: name } : {}),
+          ...(options.applyToOthers ? { assignUnassignedTo: name } : {}),
+        }),
+      });
+      if (!res.ok) throw new Error("Не удалось сохранить настройки команды");
+      const data: { assigned?: number } | null = await res.json().catch(() => null);
+      if (options.makeDefault) notes.push("по умолчанию для новых лидов");
+      if (data?.assigned) {
+        const n = data.assigned;
+        const word = n % 10 === 1 && n % 100 !== 11 ? "лиду" : "лидам";
+        notes.push(`назначен ещё ${n} ${word}`);
+      }
+    }
+    setAssigneeNote(notes.length > 0 ? `${name}: ${notes.join(", ")}` : null);
     router.refresh();
   }
 
@@ -130,7 +176,25 @@ export function StagePanel({ lead }: { lead: Lead }) {
 
         <Separator />
 
-        <MetaRow label="Ответственный" value={lead.assignee} />
+        <div className="flex items-center justify-between text-sm">
+          <span className="text-muted-foreground">Ответственный</span>
+          <button
+            type="button"
+            onClick={() => setAssigneeOpen(true)}
+            aria-label="Изменить ответственного"
+            className="group -mr-1.5 inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <span className={cn("font-medium", isUnassigned(assignee) && "text-muted-foreground")}>
+              {assignee}
+            </span>
+            <UserCog className="h-3.5 w-3.5 text-muted-foreground transition-colors group-hover:text-foreground" />
+          </button>
+        </div>
+        {assigneeNote && (
+          <p role="status" className="-mt-2 text-right text-xs text-muted-foreground">
+            {assigneeNote}
+          </p>
+        )}
         <div className="flex items-center justify-between text-sm">
           <span className="text-muted-foreground">Следующее касание</span>
           <button
@@ -170,6 +234,14 @@ export function StagePanel({ lead }: { lead: Lead }) {
         <MetaRow label="Пост/реклама" value={lead.campaign} />
         <MetaRow label="Город, страна" value={lead.homeLocation} />
       </CardContent>
+
+      <AssigneeDialog
+        open={assigneeOpen}
+        onOpenChange={setAssigneeOpen}
+        currentAssignee={assignee}
+        patientName={lead.name}
+        onSave={handleAssigneeSave}
+      />
 
       <NextTouchDialog
         open={pickerOpen}

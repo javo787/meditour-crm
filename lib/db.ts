@@ -2,6 +2,7 @@ import { ObjectId, type Collection, type Filter } from "mongodb";
 
 import { getDb } from "@/lib/mongodb";
 import { createLogger } from "@/lib/logger";
+import { applyTeamPatch, UNASSIGNED, type TeamPatch, type TeamSettings } from "@/lib/team";
 import { DEFAULT_CRM_TIMEZONE, endOfDayInZone } from "@/lib/touches";
 import type { CaseAssistantMessage, CaseAssistantRole, ChatMessage, Lead, MessageSender, Stage } from "@/lib/types";
 
@@ -86,6 +87,19 @@ async function messagesCollection(): Promise<Collection<MessageDoc>> {
 async function caseAssistantMessagesCollection(): Promise<Collection<CaseAssistantMessageDoc>> {
   const db = await getDb();
   return db.collection<CaseAssistantMessageDoc>("CaseAssistantMessages");
+}
+
+interface TeamSettingsDoc {
+  _id: string;
+  members: string[];
+  defaultAssignee: string | null;
+}
+
+const TEAM_DOC_ID = "team";
+
+async function teamCollection(): Promise<Collection<TeamSettingsDoc>> {
+  const db = await getDb();
+  return db.collection<TeamSettingsDoc>("Settings");
 }
 
 async function mediaAssetsCollection(): Promise<Collection<MediaAssetDoc>> {
@@ -240,7 +254,7 @@ export async function createLead(input: {
     phone: input.phone,
     diagnosis: input.diagnosis ?? "Уточняется в переписке",
     stage: input.stage ?? "new",
-    assignee: input.assignee ?? "Не назначен",
+    assignee: input.assignee ?? (await getDefaultAssignee()) ?? UNASSIGNED,
     nextTouch: input.nextTouch ?? now,
     createdAt: input.createdAt ?? now,
     aiPaused: false,
@@ -253,6 +267,50 @@ export async function createLead(input: {
 
   const result = await col.insertOne(doc as LeadDoc);
   return toLead({ _id: result.insertedId, ...doc });
+}
+
+/** Лиды без ответственного (кроме закрытых — выигранных и отказов). */
+const UNASSIGNED_ACTIVE_FILTER: Filter<LeadDoc> = {
+  stage: { $nin: ["won", "declined"] },
+  $or: [{ assignee: UNASSIGNED }, { assignee: "" }, { assignee: { $exists: false } }],
+};
+
+export async function getTeamSettings(): Promise<TeamSettings> {
+  const col = await teamCollection();
+  const doc = await col.findOne({ _id: TEAM_DOC_ID });
+  return { members: doc?.members ?? [], defaultAssignee: doc?.defaultAssignee ?? null };
+}
+
+/**
+ * Ответственный для нового лида. Никогда не бросает: сбой чтения настроек
+ * не должен мешать заводить лидов из вебхука WhatsApp.
+ */
+export async function getDefaultAssignee(): Promise<string | null> {
+  try {
+    return (await getTeamSettings()).defaultAssignee;
+  } catch (err) {
+    log.error("getDefaultAssignee failed", { err: String(err) });
+    return null;
+  }
+}
+
+export async function updateTeamSettings(patch: TeamPatch): Promise<TeamSettings> {
+  const next = applyTeamPatch(await getTeamSettings(), patch);
+  const col = await teamCollection();
+  await col.updateOne({ _id: TEAM_DOC_ID }, { $set: next }, { upsert: true });
+  return next;
+}
+
+export async function countUnassignedLeads(): Promise<number> {
+  const col = await leadsCollection();
+  return col.countDocuments(UNASSIGNED_ACTIVE_FILTER);
+}
+
+/** Назначает name всем активным лидам без ответственного. Возвращает, скольким. */
+export async function assignUnassignedLeads(name: string): Promise<number> {
+  const col = await leadsCollection();
+  const res = await col.updateMany(UNASSIGNED_ACTIVE_FILTER, { $set: { assignee: name } });
+  return res.modifiedCount;
 }
 
 export async function updateLead(

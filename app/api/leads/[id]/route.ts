@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { addMessage, getLead, updateLead } from "@/lib/db";
+import { addMessage, getLead, updateLead, updateTeamSettings } from "@/lib/db";
 import { sendDay0 } from "@/lib/follow-up";
+import { isUnassigned } from "@/lib/team";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +22,7 @@ const patchSchema = z.object({
   aiPaused: z.boolean().optional(),
   nextTouch: z.string().datetime({ offset: true }).optional(),
   noResponse: z.boolean().optional(),
+  assignee: z.string().trim().min(1).max(60).optional(),
   notes: z.string().max(4000).optional(),
   declinedReason: z.string().max(500).optional(),
   source: z.string().max(200).optional(),
@@ -72,6 +74,12 @@ export async function PATCH(
   });
   if (!lead) {
     return NextResponse.json({ error: "Лид не найден" }, { status: 404 });
+  }
+
+  // Новое имя ответственного попадает в список команды — потом его можно
+  // выбрать одним тапом у других лидов.
+  if (parsed.data.assignee && !isUnassigned(parsed.data.assignee)) {
+    await updateTeamSettings({ addMember: parsed.data.assignee }).catch(() => undefined);
   }
 
   if (parsed.data.aiPaused !== undefined) {
