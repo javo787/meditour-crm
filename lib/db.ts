@@ -2,6 +2,7 @@ import { ObjectId, type Collection, type Filter } from "mongodb";
 
 import { getDb } from "@/lib/mongodb";
 import { createLogger } from "@/lib/logger";
+import { ECHO_WINDOW_MS, findEchoMatch } from "@/lib/outgoing-echo";
 import { applyTeamPatch, UNASSIGNED, type TeamPatch, type TeamSettings } from "@/lib/team";
 import { DEFAULT_CRM_TIMEZONE, endOfDayInZone } from "@/lib/touches";
 import type { CaseAssistantMessage, CaseAssistantRole, ChatMessage, Lead, MessageSender, Stage } from "@/lib/types";
@@ -47,6 +48,10 @@ interface MessageDoc {
   at: string;
   media?: { kind: "image" | "audio"; mimeType: string };
   deliveryFailed?: boolean;
+  // Идентификатор сообщения в WhatsApp (key.id). Есть у сообщений, которые
+  // мы сопоставили с событием из вебхука: так эхо и повторные доставки не
+  // превращаются в дубли.
+  waId?: string;
 }
 
 // Отдельная коллекция от Messages: это переписка координатора с
@@ -360,7 +365,8 @@ export async function addMessage(
   leadId: string,
   from: MessageSender,
   text: string,
-  media?: { kind: "image" | "audio"; mimeType: string }
+  media?: { kind: "image" | "audio"; mimeType: string },
+  options?: { waId?: string }
 ): Promise<ChatMessage> {
   const col = await messagesCollection();
   const at = new Date().toISOString();
@@ -370,6 +376,9 @@ export async function addMessage(
     text,
     at,
     media,
+    // Только если задан: драйвер пишет undefined как null, а «нет waId»
+    // должно оставаться именно отсутствием поля.
+    ...(options?.waId ? { waId: options.waId } : {}),
   } satisfies Omit<MessageDoc, "_id">;
 
   const result = await col.insertOne(doc as MessageDoc);
@@ -402,6 +411,50 @@ export async function addMessage(
   }
 
   return toMessage({ _id: result.insertedId, ...doc });
+}
+
+/** Есть ли уже в переписке сообщение с таким идентификатором WhatsApp. */
+export async function hasMessageWithWaId(leadId: string, waId: string): Promise<boolean> {
+  if (!ObjectId.isValid(leadId)) return false;
+  const col = await messagesCollection();
+  const doc = await col.findOne({ leadId: new ObjectId(leadId), waId }, { projection: { _id: 1 } });
+  return doc !== null;
+}
+
+/**
+ * Эхо исходящего сообщения из WhatsApp (fromMe). Если это то, что мы сами
+ * только что отправили (CRM или ИИ сохраняют сообщение ДО отправки), —
+ * закрепляем за ним waId и возвращаем true: добавлять в историю нечего.
+ * Если подходящего нет — значит, координатор написал с телефона (false).
+ */
+export async function claimOutgoingEcho(
+  leadId: string,
+  text: string,
+  waId: string,
+  now: number = Date.now()
+): Promise<boolean> {
+  if (!ObjectId.isValid(leadId)) return false;
+  const col = await messagesCollection();
+  const since = new Date(now - ECHO_WINDOW_MS).toISOString();
+  const recent = await col
+    .find({
+      leadId: new ObjectId(leadId),
+      from: { $in: ["ai", "coordinator"] },
+      at: { $gte: since },
+      deliveryFailed: { $ne: true },
+    })
+    .sort({ at: 1 })
+    .limit(50)
+    .toArray();
+
+  const match = findEchoMatch(
+    recent.filter((m) => !m.waId),
+    text
+  );
+  if (!match) return false;
+
+  await col.updateOne({ _id: match._id }, { $set: { waId } });
+  return true;
 }
 
 // Единственный документ-"пульс": обновляется БЕЗУСЛОВНО на каждый вызов

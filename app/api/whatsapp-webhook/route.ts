@@ -2,10 +2,12 @@ import { NextResponse } from "next/server";
 
 import {
   addMessage,
+  claimOutgoingEcho,
   createLead,
   findLeadByPhone,
   getLead,
   getMessages,
+  hasMessageWithWaId,
   markMessageDeliveryFailed,
   recordWebhookHeartbeat,
   saveMediaAsset,
@@ -120,20 +122,23 @@ async function parseAndValidateWebhook(request: Request, log: Logger) {
   const data = body.data;
   const key = data?.key;
 
-  // Игнорируем эхо собственных исходящих сообщений — иначе зациклимся.
-  if (!key || key.fromMe) {
-    log.info("5. сообщение пропущено — нет key или это своё же эхо (fromMe)", {
-      hasKey: Boolean(key),
-      fromMe: key?.fromMe,
-    });
-    return { earlyResponse: NextResponse.json({ ok: true, skipped: "fromMe" }) };
+  if (!key) {
+    log.info("5. сообщение пропущено — в событии нет key");
+    return { earlyResponse: NextResponse.json({ ok: true, skipped: "no-key" }) };
   }
-  log.info("5. это входящее сообщение от пациента (не эхо)");
+
+  // fromMe — исходящее сообщение. Это либо эхо того, что отправила сама CRM/ИИ
+  // (такое не сохраняем второй раз), либо реплика, которую координатор
+  // написал пациенту прямо с телефона (её нужно показать в переписке).
+  // Ни то ни другое никогда не запускает ответ ИИ — зацикливания нет.
+  const fromMe = Boolean(key.fromMe);
+  log.info(fromMe ? "5. исходящее сообщение (fromMe)" : "5. это входящее сообщение от пациента");
 
   const resolved = resolveWhatsAppJid({
     remoteJid: key.remoteJid,
     remoteJidAlt: key.remoteJidAlt,
-    senderPn: key.senderPn ?? data?.senderPn,
+    // У исходящего senderPn — это МЫ, а не собеседник: по нему чат не определить.
+    senderPn: fromMe ? undefined : key.senderPn ?? data?.senderPn,
   });
 
   if (resolved.kind === "ignore") {
@@ -154,7 +159,7 @@ async function parseAndValidateWebhook(request: Request, log: Logger) {
     log.warn("6. WhatsApp прислал скрытый идентификатор (@lid) без номера телефона", {
       remoteJid: key.remoteJid,
     });
-    return { body, phone: resolved.replyTo };
+    return { body, phone: resolved.replyTo, fromMe };
   }
 
   if (key.remoteJid?.endsWith("@lid")) {
@@ -162,7 +167,7 @@ async function parseAndValidateWebhook(request: Request, log: Logger) {
   } else {
     log.info("6. номер телефона извлечён", { phone: resolved.phone });
   }
-  return { body, phone: resolved.phone };
+  return { body, phone: resolved.phone, fromMe };
 }
 
 async function extractMessageContent(
@@ -231,6 +236,107 @@ async function extractMessageContent(
       : "[неподдерживаемый тип сообщения]");
 
   return { text, storedText, image, audio };
+}
+
+// Сообщение, которое координатор написал пациенту с телефона (или эхо того,
+// что мы сами отправили). Лид НЕ создаём: на телефоне координатора живёт и
+// личная переписка, и ей не место в CRM — лид заводится только входящим
+// сообщением пациента.
+async function processOutgoingMessage(
+  phone: string,
+  data: NonNullable<EvolutionWebhookBody["data"]>,
+  requestId: string,
+  log: Logger
+) {
+  const key = data.key as NonNullable<EvolutionWebhookBody["data"]>["key"];
+  const waId = key?.id;
+
+  const lead = await findLeadByPhone(phone);
+  if (!lead) {
+    log.info("out. чат не из CRM (лида с таким номером нет) — исходящее не сохраняем");
+    return NextResponse.json({ ok: true, skipped: "unknown-chat" });
+  }
+
+  // Повторная доставка того же события.
+  if (waId && (await hasMessageWithWaId(lead.id, waId))) {
+    log.info("out. это сообщение уже есть в переписке (по id WhatsApp)", { leadId: lead.id });
+    return NextResponse.json({ ok: true, skipped: "duplicate" });
+  }
+
+  // Эхо того, что отправила сама CRM или ИИ.
+  const plainText = data.message?.conversation ?? data.message?.extendedTextMessage?.text ?? "";
+  if (waId && plainText && (await claimOutgoingEcho(lead.id, plainText, waId))) {
+    log.info("out. это эхо сообщения, отправленного из CRM/ИИ — второй раз не сохраняем", {
+      leadId: lead.id,
+    });
+    return NextResponse.json({ ok: true, skipped: "crm-echo" });
+  }
+
+  const messageType = data.messageType ?? "";
+  const { text, storedText, image, audio } = await extractMessageContent(
+    data.message,
+    messageType,
+    key,
+    requestId,
+    log
+  );
+
+  // Реакции, удаления, служебные события и т.п. — не реплики диалога.
+  const label =
+    text || image || audio
+    ? storedText
+    : messageType === "imageMessage"
+    ? "📎 [изображение]"
+    : messageType === "audioMessage"
+    ? "🎤 [голосовое сообщение]"
+    : null;
+  if (!label) {
+    log.info("out. исходящее без текста/фото/голосового — пропускаем", { messageType });
+    return NextResponse.json({ ok: true, skipped: "unsupported" });
+  }
+
+  const saved = await addMessage(
+    lead.id,
+    "coordinator",
+    label + (image ? " (+фото)" : "") + (audio ? " (+голосовое)" : ""),
+    image
+      ? { kind: "image", mimeType: image.mimeType }
+      : audio
+      ? { kind: "audio", mimeType: audio.mimeType }
+      : undefined,
+    { waId }
+  );
+  log.info("out. сообщение координатора с телефона сохранено в переписку", {
+    leadId: lead.id,
+    hasMedia: Boolean(image || audio),
+  });
+
+  try {
+    if (image) {
+      await saveMediaAsset({
+        leadId: lead.id,
+        messageId: saved.id,
+        kind: "image",
+        mimeType: image.mimeType,
+        base64: image.base64,
+      });
+    } else if (audio) {
+      await saveMediaAsset({
+        leadId: lead.id,
+        messageId: saved.id,
+        kind: "audio",
+        mimeType: audio.mimeType,
+        base64: audio.base64,
+      });
+    }
+  } catch (err) {
+    log.error("out. не удалось сохранить медиа исходящего сообщения — текстовая запись осталась", {
+      leadId: lead.id,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  return NextResponse.json({ ok: true, saved: "coordinator-phone" });
 }
 
 async function processNewMessage(
@@ -336,8 +442,22 @@ export async function POST(request: Request) {
   if ("errorResponse" in validationResult) return validationResult.errorResponse;
   if ("earlyResponse" in validationResult) return validationResult.earlyResponse;
 
-  const { body, phone } = validationResult;
+  const { body, phone, fromMe } = validationResult;
   const data = body.data as NonNullable<EvolutionWebhookBody["data"]>;
+
+  if (fromMe) {
+    try {
+      return await processOutgoingMessage(phone, data, requestId, log);
+    } catch (err) {
+      log.error("Не удалось обработать исходящее сообщение (с телефона координатора)", {
+        phone,
+        messageType: data.messageType,
+        message: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      });
+      return NextResponse.json({ ok: false, error: "internal-error" }, { status: 500 });
+    }
+  }
 
   try {
     const { text, storedText, image, audio } = await extractMessageContent(
