@@ -7,6 +7,7 @@ import {
   ArrowLeft,
   Bot,
   Check,
+  ChevronDown,
   Copy,
   FlaskConical,
   ImagePlus,
@@ -129,6 +130,8 @@ export function Simulator() {
   const [running, setRunning] = useState(false);
   const [copied, setCopied] = useState(false);
   const [restored, setRestored] = useState(false);
+  // Панель выбора сценария: открыта до начала прогона, потом сворачивается в одну строку.
+  const [settingsOpen, setSettingsOpen] = useState(true);
 
   const itemsRef = useRef<SimItem[]>([]);
   const pausedRef = useRef(false);
@@ -169,6 +172,8 @@ export function Simulator() {
         };
         itemsRef.current = saved.items ?? [];
         setItems(itemsRef.current);
+        // Диалог уже идёт — панель сценария сразу компактная, чтобы не отнимать место.
+        if (itemsRef.current.length > 0) setSettingsOpen(false);
         setPausedBoth(Boolean(saved.paused));
         setMode(saved.mode ?? "manual");
         setPersonaId(saved.personaId ?? SIM_PERSONAS[0].id);
@@ -288,6 +293,7 @@ export function Simulator() {
     if (busy || running) return;
     stopRef.current = false;
     setRunning(true);
+    setSettingsOpen(false);
     const total = Number(turns);
     try {
       for (let i = 0; i < total; i++) {
@@ -341,6 +347,7 @@ export function Simulator() {
     setPausedBoth(false);
     setDraft("");
     setAttachment(null);
+    setSettingsOpen(true);
   }
 
   async function copyTranscript() {
@@ -376,60 +383,38 @@ export function Simulator() {
   );
   const patientCount = items.filter((i) => i.kind === "msg" && i.from === "patient").length;
   const locked = busy || running;
+  const statsLine =
+    items.length > 0
+      ? [
+          `Реплик пациента: ${patientCount}`,
+          `ответов ИИ: ${aiReplies.length}`,
+          avgLatency !== null ? `среднее ${avgLatency.toFixed(1)} с` : null,
+          languages.length > 0 ? `язык: ${languages.join(", ")}` : null,
+          paused ? "ИИ на паузе" : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")
+      : null;
+  const showSettings = mode === "auto" && (settingsOpen || items.length === 0) && !running;
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
-      {/* Шапка */}
-      <div className="border-b px-4 py-3 sm:px-5">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-3">
+      {/* Шапка: одна компактная строка */}
+      <div className="border-b px-3 py-2 sm:px-5">
+        <div className="mx-auto flex w-full max-w-4xl items-center gap-2">
           <Link
             href="/dashboard/settings#ai-test"
-            className="-ml-1 inline-flex w-fit items-center gap-1.5 rounded-md px-1 py-0.5 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            aria-label="Назад в настройки"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <ArrowLeft className="h-4 w-4" />
-            Настройки
           </Link>
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <h1 className="flex items-center gap-2 text-lg font-semibold tracking-tight">
-                <FlaskConical className="h-5 w-5 text-primary" />
-                Тест ИИ
-              </h1>
-              <p className="text-sm text-muted-foreground">
-                Песочница: сообщения не уходят в WhatsApp и не сохраняются в CRM.
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-1.5">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={copyTranscript}
-                disabled={items.length === 0}
-                className="gap-1.5"
-              >
-                {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                {copied ? "Скопировано" : "Копировать"}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={reset}
-                disabled={items.length === 0 && !running}
-                className="gap-1.5"
-              >
-                <RotateCcw className="h-3.5 w-3.5" />
-                Сбросить
-              </Button>
-            </div>
-          </div>
+          <h1 className="flex shrink-0 items-center gap-1.5 text-base font-semibold tracking-tight">
+            <FlaskConical className="h-4 w-4 text-primary" />
+            Тест ИИ
+          </h1>
 
-          <div
-            role="tablist"
-            aria-label="Режим теста"
-            className="flex gap-1 rounded-lg bg-muted p-1 sm:w-fit"
-          >
+          <div role="tablist" aria-label="Режим теста" className="ml-1 flex gap-0.5 rounded-lg bg-muted p-0.5">
             {(
               [
                 ["manual", "Вручную"],
@@ -442,9 +427,12 @@ export function Simulator() {
                 role="tab"
                 aria-selected={mode === id}
                 disabled={running}
-                onClick={() => setMode(id)}
+                onClick={() => {
+                  setMode(id);
+                  if (id === "auto") setSettingsOpen(true);
+                }}
                 className={cn(
-                  "flex-1 rounded-md px-4 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 sm:flex-none",
+                  "rounded-md px-3 py-1 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60",
                   mode === id ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
                 )}
               >
@@ -453,120 +441,132 @@ export function Simulator() {
             ))}
           </div>
 
-          {mode === "auto" && (
-            <div className="flex flex-col gap-3 rounded-lg border bg-card p-3">
-              <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
-                <Select
-                  value={personaId}
-                  onValueChange={(id) => {
-                    setPersonaId(id);
-                    setLanguage(findPersona(id).language);
-                  }}
-                  disabled={running}
-                >
-                  <SelectTrigger aria-label="Сценарий пациента">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SIM_PERSONAS.map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.title}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Select
-                  value={language}
-                  onValueChange={(v) => setLanguage(v as SimLanguage)}
-                  disabled={running}
-                >
-                  <SelectTrigger className="sm:w-36" aria-label="Язык пациента">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(Object.keys(SIM_LANGUAGE_LABELS) as SimLanguage[]).map((l) => (
-                      <SelectItem key={l} value={l}>
-                        {SIM_LANGUAGE_LABELS[l]}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <Select value={turns} onValueChange={setTurns} disabled={running}>
-                  <SelectTrigger className="sm:w-32" aria-label="Число реплик пациента">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {TURN_OPTIONS.map((t) => (
-                      <SelectItem key={t} value={t}>
-                        {t} реплик
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">Проверяет:</span> {persona.focus}.{" "}
-                {persona.description}
-              </p>
-              <div className="flex items-center gap-2">
-                {running ? (
-                  <Button type="button" variant="destructive" size="sm" onClick={stopAuto} className="gap-1.5">
-                    <Square className="h-3.5 w-3.5" />
-                    Остановить
-                  </Button>
-                ) : (
-                  <Button type="button" size="sm" onClick={runAuto} disabled={busy} className="gap-1.5">
-                    <Play className="h-3.5 w-3.5" />
-                    {items.length > 0 ? "Продолжить прогон" : "Запустить"}
-                  </Button>
-                )}
-                {running && (
-                  <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    Идёт прогон…
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-
-          {items.length > 0 && (
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-              <span>
-                Реплик пациента: <b className="font-medium tabular-nums text-foreground">{patientCount}</b>
-              </span>
-              <span>
-                Ответов ИИ: <b className="font-medium tabular-nums text-foreground">{aiReplies.length}</b>
-              </span>
-              {avgLatency !== null && (
-                <span>
-                  Среднее время ответа:{" "}
-                  <b className="font-medium tabular-nums text-foreground">{avgLatency.toFixed(1)} с</b>
-                </span>
-              )}
-              {languages.length > 0 && (
-                <span>
-                  Языки ответов:{" "}
-                  <b className="font-medium text-foreground">{languages.join(", ")}</b>
-                </span>
-              )}
-              {paused && <span className="font-medium text-amber-600 dark:text-amber-400">ИИ на паузе</span>}
-            </div>
-          )}
+          <div className="ml-auto flex shrink-0 items-center gap-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={copyTranscript}
+              disabled={items.length === 0}
+              className="h-8 gap-1.5 px-2"
+              title="Скопировать диалог"
+            >
+              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+              <span className="hidden sm:inline">{copied ? "Скопировано" : "Копировать"}</span>
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={reset}
+              disabled={items.length === 0 && !running}
+              className="h-8 gap-1.5 px-2"
+              title="Очистить диалог"
+            >
+              <RotateCcw className="h-4 w-4" />
+              <span className="hidden sm:inline">Сбросить</span>
+            </Button>
+          </div>
         </div>
       </div>
 
-      {/* Переписка */}
-      <div ref={scrollRef} className="thin-scrollbar flex-1 overflow-y-auto px-4 py-4 sm:px-5">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-3">
+      {/* Автопациент: выбор сценария — раскрыт до запуска, потом одна строка */}
+      {mode === "auto" && (
+        <div className="border-b bg-card/50 px-3 py-2 sm:px-5">
+          <div className="mx-auto w-full max-w-4xl">
+            {showSettings ? (
+              <div className="flex flex-col gap-2">
+                <div className="grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+                  <Select
+                    value={personaId}
+                    onValueChange={(id) => {
+                      setPersonaId(id);
+                      setLanguage(findPersona(id).language);
+                    }}
+                  >
+                    <SelectTrigger aria-label="Сценарий пациента" className="h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SIM_PERSONAS.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.title}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={language} onValueChange={(v) => setLanguage(v as SimLanguage)}>
+                    <SelectTrigger className="h-9 sm:w-36" aria-label="Язык пациента">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(Object.keys(SIM_LANGUAGE_LABELS) as SimLanguage[]).map((l) => (
+                        <SelectItem key={l} value={l}>
+                          {SIM_LANGUAGE_LABELS[l]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={turns} onValueChange={setTurns}>
+                    <SelectTrigger className="h-9 sm:w-32" aria-label="Число реплик пациента">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TURN_OPTIONS.map((t) => (
+                        <SelectItem key={t} value={t}>
+                          {t} реплик
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <details className="group text-xs text-muted-foreground">
+                  <summary className="flex cursor-pointer list-none items-center gap-1 [&::-webkit-details-marker]:hidden">
+                    <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+                    <span>
+                      <span className="font-medium text-foreground">Проверяет:</span> {persona.focus}
+                    </span>
+                  </summary>
+                  <p className="mt-1.5 pl-[18px]">{persona.description}</p>
+                </details>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-2 text-sm">
+                <p className="min-w-0 truncate text-muted-foreground">
+                  <span className="font-medium text-foreground">{persona.title}</span>
+                  {" · "}
+                  {SIM_LANGUAGE_LABELS[language]}
+                  {" · "}
+                  {turns} реплик
+                </p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 shrink-0 px-2 text-xs"
+                  onClick={() => setSettingsOpen(true)}
+                  disabled={running}
+                >
+                  Изменить
+                </Button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Переписка — получает всё оставшееся место */}
+      <div ref={scrollRef} className="thin-scrollbar flex-1 overflow-y-auto px-3 py-3 sm:px-5">
+        <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
           {items.length === 0 && (
-            <div className="flex flex-col items-center gap-2 py-12 text-center text-muted-foreground">
+            <div className="flex flex-col items-center gap-2 py-10 text-center text-muted-foreground">
               <Bot className="h-8 w-8" />
               <p className="text-sm">
                 {mode === "manual"
                   ? "Напишите сообщение от лица пациента — ИИ ответит так же, как в WhatsApp."
                   : "Выберите сценарий и нажмите «Запустить» — второй ИИ сыграет пациента."}
               </p>
+              <p className="text-xs">Песочница: ничего не уходит в WhatsApp и не сохраняется в CRM.</p>
             </div>
           )}
 
@@ -646,11 +646,11 @@ export function Simulator() {
         </div>
       </div>
 
-      {/* Ввод */}
-      <div className="border-t px-4 py-3 sm:px-5">
-        <div className="mx-auto flex w-full max-w-3xl flex-col gap-2">
+      {/* Низ: управление прогоном или ввод сообщения */}
+      <div className="border-t px-3 py-2 sm:px-5">
+        <div className="mx-auto flex w-full max-w-4xl flex-col gap-2">
           {paused && (
-            <div className="flex items-center justify-between gap-2 rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+            <div className="flex items-center justify-between gap-2 rounded-lg bg-amber-500/10 px-3 py-1.5 text-xs text-amber-700 dark:text-amber-400">
               <span>ИИ на паузе — как после передачи координатору.</span>
               <Button
                 type="button"
@@ -667,8 +667,27 @@ export function Simulator() {
             </div>
           )}
 
-          {mode === "manual" && (
+          {mode === "auto" ? (
+            <div className="flex items-center gap-3">
+              {running ? (
+                <Button type="button" variant="destructive" size="sm" onClick={stopAuto} className="shrink-0 gap-1.5">
+                  <Square className="h-3.5 w-3.5" />
+                  Остановить
+                </Button>
+              ) : (
+                <Button type="button" size="sm" onClick={runAuto} disabled={busy} className="shrink-0 gap-1.5">
+                  <Play className="h-3.5 w-3.5" />
+                  {items.length > 0 ? "Продолжить" : "Запустить"}
+                </Button>
+              )}
+              <p className="min-w-0 truncate text-xs text-muted-foreground">
+                {running ? "Идёт прогон… " : ""}
+                {statsLine}
+              </p>
+            </div>
+          ) : (
             <>
+              {statsLine && <p className="truncate text-[11px] text-muted-foreground">{statsLine}</p>}
               <div className="flex gap-1.5 overflow-x-auto pb-0.5">
                 {SIM_QUICK_PHRASES.map((phrase) => (
                   <button
