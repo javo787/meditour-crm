@@ -2,6 +2,13 @@ import type { ChatMessage } from "@/lib/types";
 import { createLogger } from "@/lib/logger";
 import { MEDITUR_SYSTEM_PROMPT } from "@/lib/playbook";
 import { MEDICAL_OPINION_SYSTEM_PROMPT } from "@/lib/medical-opinion-prompt";
+import {
+  buildPatientSystemPrompt,
+  parsePatientReply,
+  toPatientContents,
+  type SimLanguage,
+  type SimTurn,
+} from "@/lib/simulator";
 import { dropDuplicateBubbles, parseModelReply, type DialogLanguage } from "@/lib/humanize";
 
 const log = createLogger("gemini");
@@ -474,6 +481,25 @@ export async function askGemini(params: {
   });
 
   return { messages: kept, handoff, language: reply.language, suppressed };
+}
+
+// Песочница ИИ (/dashboard/simulator): вторая модель играет пациента по заданной
+// роли. Ничего не пишет в БД и не отправляет в WhatsApp. Температура выше
+// обычной — пациенты должны отличаться друг от друга от прогона к прогону.
+export async function askPatientSimulator(params: {
+  persona: string;
+  language: SimLanguage;
+  transcript: SimTurn[];
+  requestId?: string;
+}): Promise<{ text: string; end: boolean }> {
+  const logger = params.requestId ? log.child(params.requestId) : log;
+  const { text } = await generateWithFallback(
+    toPatientContents(params.transcript),
+    buildPatientSystemPrompt(params.persona, params.language),
+    logger,
+    { generationConfig: { temperature: 1 } }
+  );
+  return parsePatientReply(text);
 }
 
 // Ассистент подготовки Medical Opinion Request (Этап 4). Промпт — в
