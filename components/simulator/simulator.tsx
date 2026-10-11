@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import {
   AlertTriangle,
+  ArrowLeft,
   Bot,
   Check,
   Copy,
@@ -380,6 +382,13 @@ export function Simulator() {
       {/* Шапка */}
       <div className="border-b px-4 py-3 sm:px-5">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-3">
+          <Link
+            href="/dashboard/settings#ai-test"
+            className="-ml-1 inline-flex w-fit items-center gap-1.5 rounded-md px-1 py-0.5 text-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Настройки
+          </Link>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <h1 className="flex items-center gap-2 text-lg font-semibold tracking-tight">

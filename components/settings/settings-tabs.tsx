@@ -1,25 +1,28 @@
 "use client";
 
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Activity, HardDrive, Users, type LucideIcon } from "lucide-react";
+import { Activity, FlaskConical, HardDrive, Users, type LucideIcon } from "lucide-react";
 
+import { AiTestPanel } from "@/components/settings/ai-test-panel";
 import { PlatformStatusPanel } from "@/components/settings/platform-status-panel";
 import { StoragePanel } from "@/components/settings/storage-panel";
 import { TeamPanel } from "@/components/settings/team-panel";
 import { cn } from "@/lib/utils";
 
-type TabId = "team" | "system" | "storage";
+type TabId = "team" | "system" | "storage" | "ai-test";
 
 const TABS: { id: TabId; label: string; icon: LucideIcon }[] = [
   { id: "team", label: "Команда", icon: Users },
   { id: "system", label: "Система", icon: Activity },
   { id: "storage", label: "Хранилище", icon: HardDrive },
+  { id: "ai-test", label: "Тест ИИ", icon: FlaskConical },
 ];
 
 const PANELS: Record<TabId, () => JSX.Element> = {
   team: () => <TeamPanel />,
   system: () => <PlatformStatusPanel />,
   storage: () => <StoragePanel />,
+  "ai-test": () => <AiTestPanel />,
 };
 
 export function SettingsTabs() {
@@ -28,6 +31,7 @@ export function SettingsTabs() {
     team: null,
     system: null,
     storage: null,
+    "ai-test": null,
   });
 
   // Вкладка хранится в адресе (#storage): обновление страницы и ссылки

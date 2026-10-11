@@ -483,7 +483,7 @@ export async function askGemini(params: {
   return { messages: kept, handoff, language: reply.language, suppressed };
 }
 
-// Песочница ИИ (/dashboard/simulator): вторая модель играет пациента по заданной
+// Песочница ИИ (/dashboard/settings/simulator): вторая модель играет пациента по заданной
 // роли. Ничего не пишет в БД и не отправляет в WhatsApp. Температура выше
 // обычной — пациенты должны отличаться друг от друга от прогона к прогону.
 export async function askPatientSimulator(params: {
