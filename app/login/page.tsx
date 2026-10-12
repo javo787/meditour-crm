@@ -18,7 +18,7 @@ import {
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("coordinator@meditur.local");
+  const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -27,10 +27,14 @@ export default function LoginPage() {
     e.preventDefault();
     setLoading(true);
     setError(null);
-    const res = await signIn("credentials", { email, password, redirect: false });
+    const res = await signIn("credentials", { name, password, redirect: false });
     setLoading(false);
     if (res?.error) {
-      setError("Неверный email или пароль");
+      setError(
+        res.error === "RATE_LIMITED"
+          ? "Слишком много неудачных попыток. Попробуйте через 15 минут."
+          : "Неверный пароль",
+      );
       return;
     }
     router.push("/dashboard");
@@ -43,18 +47,19 @@ export default function LoginPage() {
         <CardHeader className="items-center text-center">
           <BrandLogo />
           <CardTitle>Meditur CRM</CardTitle>
-          <CardDescription>Вход для координаторов</CardDescription>
+          <CardDescription>Введите пароль, чтобы войти</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="email">Email</Label>
+              <Label htmlFor="name">Ваше имя (необязательно)</Label>
               <Input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                required
+                id="name"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                autoComplete="name"
+                maxLength={60}
               />
             </div>
             <div className="flex flex-col gap-1.5">
@@ -64,8 +69,9 @@ export default function LoginPage() {
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="см. .env.example"
+                autoComplete="current-password"
                 required
+                autoFocus
               />
             </div>
             {error && <p className="text-sm text-destructive">{error}</p>}

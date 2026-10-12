@@ -49,7 +49,7 @@ export function Topbar({ dueCount = 0 }: { dueCount?: number }) {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuLabel>{session?.user?.email}</DropdownMenuLabel>
+            <DropdownMenuLabel>{session?.user?.email ?? "Meditur CRM"}</DropdownMenuLabel>
             <DropdownMenuSeparator />
             <DropdownMenuItem onClick={() => signOut({ callbackUrl: "/login" })}>
               <LogOut className="mr-2 h-4 w-4" />
