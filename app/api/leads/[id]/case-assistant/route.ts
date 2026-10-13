@@ -1,6 +1,14 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
-import { addCaseAssistantMessage, getCaseAssistantMessages, getLead, getMediaAssetsForLead, getMessages } from "@/lib/db";
+import {
+  addCaseAssistantMessage,
+  getCaseAssistantMessages,
+  getDocuments,
+  getLead,
+  getMediaAssetsForLead,
+  getMessages,
+} from "@/lib/db";
+import { buildDocumentsContext } from "@/lib/dossier";
 import { askCaseAssistant } from "@/lib/gemini";
 import { createLogger, newRequestId } from "@/lib/logger";
 import type { ChatMessage, Lead } from "@/lib/types";
@@ -79,20 +87,33 @@ export async function POST(
   // Сохраняем реплику координатора сразу, до вызова Gemini — она уже
   // валидный факт истории независимо от того, получится ли документ.
   const userMessage = await addCaseAssistantMessage(params.id, "user", parsed.data.text);
-  const [history, whatsappMessages, mediaAssets] = await Promise.all([
+  const [history, whatsappMessages, allMediaAssets, documents] = await Promise.all([
     getCaseAssistantMessages(params.id),
     getMessages(params.id),
     getMediaAssetsForLead(params.id),
+    getDocuments(params.id),
   ]);
 
+  // Фото, которые уже разобраны в «Документах», идут в ассистент текстом
+  // (перевод), а не картинкой: раньше каждая реплика координатора заново
+  // отправляла в Gemini все фото лида целиком. Неразобранные фото и голосовые
+  // по-прежнему прикладываются как есть.
+  const processedMediaIds = new Set(
+    documents.filter((d) => d.status === "done" && d.mediaMessageId).map((d) => d.mediaMessageId as string)
+  );
+  const mediaAssets = allMediaAssets.filter((m) => m.kind === "audio" || !processedMediaIds.has(m.messageId));
+
   const transcript = buildConversationTranscript(whatsappMessages);
-  const leadContext = transcript ? `${buildLeadContext(lead)}\n\n${transcript}` : buildLeadContext(lead);
+  const documentsContext = buildDocumentsContext(documents);
+  const leadContext = [buildLeadContext(lead), documentsContext, transcript].filter(Boolean).join("\n\n");
 
   logger.info("Запрос на Medical Opinion Request", {
     leadId: params.id,
     historyMessages: history.length,
     whatsappMessages: whatsappMessages.length,
     mediaAssets: mediaAssets.length,
+    mediaAssetsSkippedAsText: allMediaAssets.length - mediaAssets.length,
+    documentsTranslated: documents.filter((d) => d.status === "done" && d.include).length,
   });
 
   try {

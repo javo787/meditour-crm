@@ -2,6 +2,8 @@ import type { ChatMessage } from "@/lib/types";
 import { createLogger } from "@/lib/logger";
 import { MEDITUR_SYSTEM_PROMPT } from "@/lib/playbook";
 import { MEDICAL_OPINION_SYSTEM_PROMPT } from "@/lib/medical-opinion-prompt";
+import { DOCUMENT_EXTRACTION_PROMPT } from "@/lib/document-extraction-prompt";
+import { parseExtractionJson, type ExtractedDocument } from "@/lib/documents";
 import {
   buildPatientSystemPrompt,
   parsePatientReply,
@@ -552,6 +554,45 @@ export async function askCaseAssistant(params: {
     throw new Error("Gemini вернул пустой ответ для Medical Opinion Request");
   }
   return text;
+}
+
+// Разбор одного документа пациента (фото или PDF): тип, расшифровка,
+// перевод на английский. Один вызов на файл; результат сохраняется в
+// Documents (см. lib/document-queue.ts) и дальше используется как текст —
+// сами картинки в Gemini повторно не отправляются.
+export async function extractMedicalDocument(params: {
+  base64: string;
+  mimeType: string;
+  requestId?: string;
+}): Promise<ExtractedDocument> {
+  const logger = params.requestId ? log.child(params.requestId) : log;
+  const contents = [
+    {
+      role: "user",
+      parts: [
+        { inlineData: { mimeType: params.mimeType, data: params.base64 } },
+        { text: "Read and translate this document. Output the JSON object only." },
+      ] as GeminiPart[],
+    },
+  ];
+
+  logger.info("extractMedicalDocument: отправка запроса", { models: MODELS, mimeType: params.mimeType });
+
+  const { text } = await generateWithFallback(contents, DOCUMENT_EXTRACTION_PROMPT, logger, {
+    generationConfig: { temperature: 0, responseMimeType: "application/json", maxOutputTokens: 16000 },
+  });
+  if (!text) {
+    throw new Error("Gemini вернул пустой ответ при разборе документа");
+  }
+  try {
+    return parseExtractionJson(text);
+  } catch (err) {
+    logger.error("extractMedicalDocument: не удалось разобрать JSON от Gemini", {
+      message: err instanceof Error ? err.message : String(err),
+      raw: text.slice(0, 300),
+    });
+    throw new Error("Gemini вернул невалидный JSON при разборе документа");
+  }
 }
 
 const ANAMNESIS_EXTRACTION_PROMPT = `You extract structured intake data for a medical-tourism coordinator from a WhatsApp conversation transcript between their AI/coordinator ("Meditour") and a patient.
