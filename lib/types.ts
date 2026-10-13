@@ -85,3 +85,38 @@ export interface CaseAssistantMessage {
   text: string;
   at: string; // ISO datetime
 }
+
+// Документы пациента для досье с переводом (см. lib/documents.ts,
+// lib/document-queue.ts, lib/dossier-pdf.ts). Сами байты файла лежат в
+// коллекции Documents и сюда не попадают — только метаданные и результат
+// разбора, чтобы список не тянул мегабайты.
+export type DocumentCategory = "report" | "imaging" | "other";
+// new — файл сохранён, но разбор не запрошен (например, PDF из WhatsApp);
+// pending — в очереди; processing — читает Gemini; done / failed — итог.
+export type DocumentStatus = "new" | "pending" | "processing" | "done" | "failed";
+export type DocumentSource = "upload" | "chat" | "whatsapp";
+
+export interface PatientDocument {
+  id: string;
+  leadId: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  source: DocumentSource;
+  at: string; // ISO — когда файл добавлен
+  status: DocumentStatus;
+  attempts: number;
+  error?: string;
+  category?: DocumentCategory;
+  title?: string;
+  docDate?: string; // «12 Mar 2026», допускается «Mar 2026»
+  sourceLanguage?: string;
+  patientNameOnDoc?: string;
+  originalText?: string;
+  translationEn?: string;
+  uncertain?: string[];
+  warnings?: string[]; // для координатора, по-русски
+  reviewed: boolean; // координатор проверил перевод
+  include: boolean; // включать в PDF / контекст ассистента
+  mediaMessageId?: string; // если файл взят из фото в переписке
+}

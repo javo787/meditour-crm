@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { ObjectId, type Collection, type Filter } from "mongodb";
 
 import { getDb } from "@/lib/mongodb";
@@ -5,7 +6,19 @@ import { createLogger } from "@/lib/logger";
 import { ECHO_WINDOW_MS, findEchoMatch } from "@/lib/outgoing-echo";
 import { applyTeamPatch, UNASSIGNED, type TeamPatch, type TeamSettings } from "@/lib/team";
 import { DEFAULT_CRM_TIMEZONE, endOfDayInZone } from "@/lib/touches";
-import type { CaseAssistantMessage, CaseAssistantRole, ChatMessage, Lead, MessageSender, Stage } from "@/lib/types";
+import { MAX_DOCUMENT_ATTEMPTS } from "@/lib/documents";
+import type {
+  CaseAssistantMessage,
+  CaseAssistantRole,
+  ChatMessage,
+  DocumentCategory,
+  DocumentSource,
+  DocumentStatus,
+  Lead,
+  MessageSender,
+  PatientDocument,
+  Stage,
+} from "@/lib/types";
 
 const log = createLogger("db");
 
@@ -606,7 +619,7 @@ export async function getStorageStats(): Promise<{
   const db = await getDb();
   const dbStats = await db.command({ dbStats: 1 });
 
-  const collectionNames = ["Leads", "Messages", "MediaAssets", "CaseAssistantMessages"];
+  const collectionNames = ["Leads", "Messages", "MediaAssets", "CaseAssistantMessages", "Documents"];
   const collections = await Promise.all(
     collectionNames.map(async (name) => {
       try {
@@ -655,4 +668,298 @@ export async function addCaseAssistantMessage(
 
   const result = await col.insertOne(doc as CaseAssistantMessageDoc);
   return toCaseAssistantMessage({ _id: result.insertedId, ...doc });
+}
+
+
+// ───────────────────────── Документы пациента ─────────────────────────
+// Файлы (фото/PDF), которые координатор загрузил или импортировал из
+// переписки, и результат их разбора Gemini (классификация, оригинал,
+// перевод). Байты хранятся в самом документе, но во всех списках исключаются
+// проекцией — иначе панель тянула бы мегабайты.
+
+interface DocumentDoc {
+  _id: ObjectId;
+  leadId: ObjectId;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  sha256: string;
+  data?: Buffer;
+  source: DocumentSource;
+  at: string;
+  status: DocumentStatus;
+  attempts: number;
+  startedAt?: string;
+  error?: string;
+  category?: DocumentCategory;
+  title?: string;
+  docDate?: string;
+  sourceLanguage?: string;
+  patientNameOnDoc?: string;
+  originalText?: string;
+  translationEn?: string;
+  uncertain?: string[];
+  warnings?: string[];
+  reviewed: boolean;
+  include: boolean;
+  mediaMessageId?: ObjectId;
+}
+
+// Если разбор завис дольше (например, Render перезапустил сервис посреди
+// запроса) — документ снова берётся в работу.
+const STALE_PROCESSING_MS = 10 * 60 * 1000;
+const NO_BYTES = { data: 0 } as const;
+
+async function documentsCollection(): Promise<Collection<DocumentDoc>> {
+  const db = await getDb();
+  return db.collection<DocumentDoc>("Documents");
+}
+
+function toPatientDocument(doc: DocumentDoc): PatientDocument {
+  return {
+    id: doc._id.toString(),
+    leadId: doc.leadId.toString(),
+    filename: doc.filename,
+    mimeType: doc.mimeType,
+    sizeBytes: doc.sizeBytes,
+    source: doc.source,
+    at: doc.at,
+    status: doc.status,
+    attempts: doc.attempts,
+    error: doc.error,
+    category: doc.category,
+    title: doc.title,
+    docDate: doc.docDate,
+    sourceLanguage: doc.sourceLanguage,
+    patientNameOnDoc: doc.patientNameOnDoc,
+    originalText: doc.originalText,
+    translationEn: doc.translationEn,
+    uncertain: doc.uncertain,
+    warnings: doc.warnings,
+    reviewed: doc.reviewed,
+    include: doc.include,
+    mediaMessageId: doc.mediaMessageId?.toString(),
+  };
+}
+
+export async function getDocuments(leadId: string): Promise<PatientDocument[]> {
+  if (!ObjectId.isValid(leadId)) return [];
+  const col = await documentsCollection();
+  const docs = await col
+    .find({ leadId: new ObjectId(leadId) }, { projection: NO_BYTES })
+    .sort({ at: 1 })
+    .toArray();
+  return docs.map(toPatientDocument);
+}
+
+/** Создаёт документ; тот же файл (по хэшу) у того же лида второй раз не добавляется. */
+export async function createDocument(params: {
+  leadId: string;
+  filename: string;
+  mimeType: string;
+  data: Buffer;
+  source: DocumentSource;
+  status: "new" | "pending";
+  mediaMessageId?: string;
+}): Promise<{ document: PatientDocument; duplicate: boolean }> {
+  const col = await documentsCollection();
+  const leadObjectId = new ObjectId(params.leadId);
+  const sha256 = createHash("sha256").update(params.data).digest("hex");
+
+  const existing = await col.findOne({ leadId: leadObjectId, sha256 }, { projection: NO_BYTES });
+  if (existing) return { document: toPatientDocument(existing), duplicate: true };
+
+  const doc: DocumentDoc = {
+    _id: new ObjectId(),
+    leadId: leadObjectId,
+    filename: params.filename.slice(0, 200),
+    mimeType: params.mimeType,
+    sizeBytes: params.data.length,
+    sha256,
+    data: params.data,
+    source: params.source,
+    at: new Date().toISOString(),
+    status: params.status,
+    attempts: 0,
+    reviewed: false,
+    include: false,
+    ...(params.mediaMessageId && ObjectId.isValid(params.mediaMessageId)
+      ? { mediaMessageId: new ObjectId(params.mediaMessageId) }
+      : {}),
+  };
+  await col.insertOne(doc);
+  const { data: _data, ...withoutBytes } = doc;
+  return { document: toPatientDocument(withoutBytes as DocumentDoc), duplicate: false };
+}
+
+/** Копирует в документы фото из переписки, которых там ещё нет. */
+export async function importChatPhotosAsDocuments(leadId: string): Promise<{ added: number; skipped: number }> {
+  if (!ObjectId.isValid(leadId)) return { added: 0, skipped: 0 };
+  const media = await mediaAssetsCollection();
+  const docs = await documentsCollection();
+  const leadObjectId = new ObjectId(leadId);
+
+  const alreadyImported = new Set(
+    (
+      await docs
+        .find({ leadId: leadObjectId, mediaMessageId: { $exists: true } }, { projection: { mediaMessageId: 1 } })
+        .toArray()
+    ).map((d) => d.mediaMessageId?.toString())
+  );
+
+  let added = 0;
+  let skipped = 0;
+  const cursor = media.find({ leadId: leadObjectId, kind: "image" }).sort({ at: 1 });
+  for await (const asset of cursor) {
+    const messageId = asset.messageId.toString();
+    if (alreadyImported.has(messageId)) continue;
+    const ext = asset.mimeType.split("/")[1]?.split(";")[0] ?? "jpg";
+    const result = await createDocument({
+      leadId,
+      filename: `chat-photo-${messageId.slice(-6)}.${ext}`,
+      mimeType: asset.mimeType.split(";")[0].trim(),
+      data: Buffer.from(asset.data.buffer, asset.data.byteOffset, asset.data.length),
+      source: "chat",
+      status: "pending",
+      mediaMessageId: messageId,
+    });
+    if (result.duplicate) skipped++;
+    else added++;
+  }
+  return { added, skipped };
+}
+
+export async function getDocumentFile(
+  leadId: string,
+  docId: string
+): Promise<{ filename: string; mimeType: string; data: Buffer } | undefined> {
+  if (!ObjectId.isValid(leadId) || !ObjectId.isValid(docId)) return undefined;
+  const col = await documentsCollection();
+  const doc = await col.findOne({ _id: new ObjectId(docId), leadId: new ObjectId(leadId) });
+  if (!doc?.data) return undefined;
+  return { filename: doc.filename, mimeType: doc.mimeType, data: Buffer.from(doc.data.buffer, doc.data.byteOffset, doc.data.length) };
+}
+
+export interface DocumentPatch {
+  title?: string;
+  docDate?: string;
+  category?: DocumentCategory;
+  translationEn?: string;
+  include?: boolean;
+  reviewed?: boolean;
+  /** «pending» — поставить в очередь (разбор или повтор после ошибки). */
+  queue?: boolean;
+}
+
+export async function updateDocument(
+  leadId: string,
+  docId: string,
+  patch: DocumentPatch
+): Promise<PatientDocument | undefined> {
+  if (!ObjectId.isValid(leadId) || !ObjectId.isValid(docId)) return undefined;
+  const col = await documentsCollection();
+  const { queue, ...fields } = patch;
+  const set: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(fields)) if (v !== undefined) set[k] = v;
+  const unset: Record<string, ""> = {};
+  if (queue) {
+    set.status = "pending";
+    set.attempts = 0;
+    unset.error = "";
+  }
+  const update: Record<string, unknown> = {};
+  if (Object.keys(set).length > 0) update.$set = set;
+  if (Object.keys(unset).length > 0) update.$unset = unset;
+  if (Object.keys(update).length === 0) {
+    const same = await col.findOne({ _id: new ObjectId(docId), leadId: new ObjectId(leadId) }, { projection: NO_BYTES });
+    return same ? toPatientDocument(same) : undefined;
+  }
+  const doc = await col.findOneAndUpdate(
+    { _id: new ObjectId(docId), leadId: new ObjectId(leadId) },
+    update,
+    { returnDocument: "after", projection: NO_BYTES }
+  );
+  return doc ? toPatientDocument(doc) : undefined;
+}
+
+export async function deleteDocument(leadId: string, docId: string): Promise<boolean> {
+  if (!ObjectId.isValid(leadId) || !ObjectId.isValid(docId)) return false;
+  const col = await documentsCollection();
+  const res = await col.deleteOne({ _id: new ObjectId(docId), leadId: new ObjectId(leadId) });
+  return res.deletedCount > 0;
+}
+
+/** Есть ли что разбирать (в очереди или зависшее) — чтобы запустить очередь после рестарта. */
+export async function hasQueuedDocuments(): Promise<boolean> {
+  const col = await documentsCollection();
+  const staleBefore = new Date(Date.now() - STALE_PROCESSING_MS).toISOString();
+  const found = await col.findOne(
+    { $or: [{ status: "pending" }, { status: "processing", startedAt: { $lt: staleBefore } }] },
+    { projection: { _id: 1 } }
+  );
+  return Boolean(found);
+}
+
+/** Забирает следующий документ в работу (по одному — экономит память и лимиты Gemini). */
+export async function claimNextDocument(): Promise<
+  { id: string; leadId: string; mimeType: string; data: Buffer; attempts: number } | undefined
+> {
+  const col = await documentsCollection();
+  const staleBefore = new Date(Date.now() - STALE_PROCESSING_MS).toISOString();
+  const doc = await col.findOneAndUpdate(
+    { $or: [{ status: "pending" }, { status: "processing", startedAt: { $lt: staleBefore } }] },
+    { $set: { status: "processing", startedAt: new Date().toISOString() }, $inc: { attempts: 1 } },
+    { sort: { at: 1 }, returnDocument: "after" }
+  );
+  if (!doc?.data) {
+    if (doc) await col.updateOne({ _id: doc._id }, { $set: { status: "failed", error: "Файл не найден" } });
+    return undefined;
+  }
+  return {
+    id: doc._id.toString(),
+    leadId: doc.leadId.toString(),
+    mimeType: doc.mimeType,
+    data: Buffer.from(doc.data.buffer, doc.data.byteOffset, doc.data.length),
+    attempts: doc.attempts,
+  };
+}
+
+export async function completeDocument(
+  docId: string,
+  result: {
+    category: DocumentCategory;
+    title: string;
+    docDate?: string;
+    sourceLanguage?: string;
+    patientNameOnDoc?: string;
+    originalText: string;
+    translationEn: string;
+    uncertain: string[];
+    warnings: string[];
+  }
+): Promise<void> {
+  const col = await documentsCollection();
+  await col.updateOne(
+    { _id: new ObjectId(docId) },
+    {
+      $set: {
+        ...result,
+        status: "done",
+        // Документы-отчёты и снимки по умолчанию попадают в PDF, «прочее» — нет.
+        include: result.category !== "other",
+        reviewed: false,
+      },
+      $unset: { error: "", startedAt: "" },
+    }
+  );
+}
+
+/** Ошибка разбора: пока есть попытки — обратно в очередь, иначе «failed». */
+export async function failDocument(docId: string, error: string, attempts: number): Promise<void> {
+  const col = await documentsCollection();
+  const final = attempts >= MAX_DOCUMENT_ATTEMPTS;
+  await col.updateOne(
+    { _id: new ObjectId(docId) },
+    { $set: { status: final ? "failed" : "pending", error: error.slice(0, 300) }, $unset: { startedAt: "" } }
+  );
 }

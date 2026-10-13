@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import {
   addMessage,
   claimOutgoingEcho,
+  createDocument,
   createLead,
   findLeadByPhone,
   getLead,
@@ -13,6 +14,7 @@ import {
   saveMediaAsset,
   updateLead,
 } from "@/lib/db";
+import { MAX_DOCUMENT_BYTES, resolveMimeType } from "@/lib/documents";
 import { fetchMediaBase64, sendWhatsAppText } from "@/lib/evolution";
 import { askGemini } from "@/lib/gemini";
 import { typingDelayMs } from "@/lib/humanize";
@@ -40,6 +42,13 @@ const pendingBatches = new Map<string, {
 // Формат payload подтверждён по документации/issue-трекеру Evolution API v2:
 // { event: "messages.upsert", instance, apikey, data: { key, pushName, message, messageType } }
 
+interface WhatsAppDocumentMeta {
+  mimetype?: string;
+  fileName?: string;
+  title?: string;
+  caption?: string;
+}
+
 interface EvolutionWebhookBody {
   event?: string;
   apikey?: string;
@@ -55,6 +64,10 @@ interface EvolutionWebhookBody {
       extendedTextMessage?: { text?: string };
       imageMessage?: { caption?: string };
       audioMessage?: { mimetype?: string; ptt?: boolean; seconds?: number };
+      // Файлы (PDF с анализами и т.п.). Evolution может отдавать их как
+      // documentMessage или завёрнутыми в documentWithCaptionMessage.
+      documentMessage?: WhatsAppDocumentMeta;
+      documentWithCaptionMessage?: { message?: { documentMessage?: WhatsAppDocumentMeta } };
     };
   };
 }
@@ -175,11 +188,15 @@ async function extractMessageContent(
   messageType: string,
   key: NonNullable<EvolutionWebhookBody["data"]>["key"],
   requestId: string,
-  log: Logger
+  log: Logger,
+  // Документы (PDF) скачиваем только из входящих сообщений пациента: файлы,
+  // которые координатор сам отправляет с телефона, в CRM не нужны.
+  fetchDocuments = false
 ) {
   let text = message?.conversation ?? message?.extendedTextMessage?.text ?? "";
   let image: { base64: string; mimeType: string } | undefined;
   let audio: { base64: string; mimeType: string } | undefined;
+  let document: { base64: string; mimeType: string; filename: string } | undefined;
 
   log.info("7. разбор содержимого сообщения", {
     messageType,
@@ -227,15 +244,43 @@ async function extractMessageContent(
     }
   }
 
+  // Файл-документ (PDF и т.п.). В диалог с ИИ он не попадает (как и раньше —
+  // бот его не «видит»); байты уходят в раздел «Документы» пациента, откуда
+  // координатор сам запускает разбор и перевод.
+  const documentMeta = message?.documentMessage ?? message?.documentWithCaptionMessage?.message?.documentMessage;
+  const isDocumentMessage = messageType === "documentMessage" || messageType === "documentWithCaptionMessage";
+  const documentName = documentMeta?.fileName || documentMeta?.title || "document";
+  if (fetchDocuments && isDocumentMessage && documentMeta) {
+    try {
+      const media = await fetchMediaBase64(key, requestId);
+      const mimeType = resolveMimeType(media.mimetype || documentMeta.mimetype, documentName);
+      if (!mimeType) {
+        log.info("7c. документ неподдерживаемого типа — в «Документы» не сохраняем", {
+          mimetype: media.mimetype || documentMeta.mimetype,
+        });
+      } else if (media.base64.length * 0.75 > MAX_DOCUMENT_BYTES) {
+        log.info("7c. документ больше лимита — в «Документы» не сохраняем", { base64Length: media.base64.length });
+      } else {
+        document = { base64: media.base64, mimeType, filename: documentName };
+      }
+    } catch (err) {
+      log.error("7c. не удалось скачать документ из Evolution API", {
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   const storedText =
     text ||
     (image
       ? "📎 [изображение без подписи]"
       : audio
       ? "🎤 [голосовое сообщение]"
+      : isDocumentMessage && documentMeta
+      ? `📄 [документ: ${documentName}]`
       : "[неподдерживаемый тип сообщения]");
 
-  return { text, storedText, image, audio };
+  return { text, storedText, image, audio, document };
 }
 
 // Сообщение, которое координатор написал пациенту с телефона (или эхо того,
@@ -346,6 +391,7 @@ async function processNewMessage(
   storedText: string,
   image: { base64: string; mimeType: string } | undefined,
   audio: { base64: string; mimeType: string } | undefined,
+  document: { base64: string; mimeType: string; filename: string } | undefined,
   log: Logger
 ) {
   // 1) Проверяем, существует ли номер в базе — если нет, заводим лид «Новый».
@@ -408,6 +454,32 @@ async function processNewMessage(
     });
   }
 
+  // PDF/файл от пациента → раздел «Документы» (статус «new»: разбор запускает
+  // координатор кнопкой, чтобы не тратить токены на каждый присланный файл).
+  // Ошибка здесь не должна ломать ответ пациенту.
+  if (document) {
+    try {
+      const created = await createDocument({
+        leadId: lead.id,
+        filename: document.filename,
+        mimeType: document.mimeType,
+        data: Buffer.from(document.base64, "base64"),
+        source: "whatsapp",
+        status: "new",
+      });
+      log.info("9b. документ сохранён в «Документы»", {
+        leadId: lead.id,
+        documentId: created.document.id,
+        duplicate: created.duplicate,
+      });
+    } catch (err) {
+      log.error("9b. не удалось сохранить документ в «Документы» — продолжаем", {
+        leadId: lead.id,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // 3) Маршрутизатор статусов: если координатор уже взял диалог на себя
   // (aiPaused — тот же флаг, что кнопка «Остановить ИИ» на Этапе 2) — ИИ
   // сообщение игнорирует, просто оставляя его в истории для координатора.
@@ -460,15 +532,16 @@ export async function POST(request: Request) {
   }
 
   try {
-    const { text, storedText, image, audio } = await extractMessageContent(
+    const { text, storedText, image, audio, document } = await extractMessageContent(
       data.message,
       data.messageType ?? "",
       data.key,
       requestId,
-      log
+      log,
+      true
     );
 
-    return await processNewMessage(phone, data, text, storedText, image, audio, log);
+    return await processNewMessage(phone, data, text, storedText, image, audio, document, log);
   } catch (err) {
     // Раньше падение здесь (например, обрыв соединения с MongoDB) уходило
     // необработанным — сообщение терялось целиком, даже не сохранившись,

@@ -2,10 +2,11 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 
-import { getCaseAssistantMessages, getLead, getMessages } from "@/lib/db";
+import { getCaseAssistantMessages, getDocuments, getLead, getMessages } from "@/lib/db";
 import { AnamnesisPanel } from "@/components/leads/patient-card/anamnesis-panel";
 import { CaseAssistantPanel } from "@/components/leads/patient-card/case-assistant-panel";
 import { ChatPanel } from "@/components/leads/patient-card/chat-panel";
+import { DocumentsPanel } from "@/components/leads/patient-card/documents-panel";
 import { NotesPanel } from "@/components/leads/patient-card/notes-panel";
 import { StagePanel } from "@/components/leads/patient-card/stage-panel";
 import { TagsPanel } from "@/components/leads/patient-card/tags-panel";
@@ -17,6 +18,7 @@ export default async function LeadDetailPage({ params }: { params: { id: string 
   if (!lead) notFound();
   const messages = await getMessages(params.id);
   const caseAssistantMessages = await getCaseAssistantMessages(params.id);
+  const documents = await getDocuments(params.id);
 
   return (
     <div className="flex h-full flex-col gap-4 overflow-y-auto p-4 sm:p-5">
@@ -41,6 +43,7 @@ export default async function LeadDetailPage({ params }: { params: { id: string 
             </div>
           </div>
           <AnamnesisPanel lead={lead} />
+          <DocumentsPanel leadId={lead.id} leadName={lead.name} initialDocuments={documents} />
           <ChatPanel
             leadId={lead.id}
             initialMessages={messages}

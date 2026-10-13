@@ -1,5 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // pdfmake читает шрифты с диска и не должен собираться webpack-ом.
+  experimental: { serverComponentsExternalPackages: ["pdfmake"] },
   async headers() {
     return [
       {
