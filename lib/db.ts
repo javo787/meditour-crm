@@ -374,6 +374,39 @@ export async function getMessages(leadId: string): Promise<ChatMessage[]> {
   return docs.map(toMessage);
 }
 
+/**
+ * Сообщения за период для статистики (lib/chat-analysis.ts): только нужные
+ * поля — без медиа и служебных идентификаторов. Берём самые свежие, но не
+ * больше limit; truncated говорит, что более ранние в выборку не вошли.
+ */
+export async function getMessagesSince(
+  sinceIso: string,
+  limit = 20000
+): Promise<{
+  messages: Array<{ leadId: string; from: MessageSender; text: string; at: string; deliveryFailed?: boolean }>;
+  truncated: boolean;
+}> {
+  const col = await messagesCollection();
+  const docs = await col
+    .find(
+      { at: { $gte: sinceIso } },
+      { projection: { leadId: 1, from: 1, text: 1, at: 1, deliveryFailed: 1 } }
+    )
+    .sort({ at: -1 })
+    .limit(limit)
+    .toArray();
+  return {
+    truncated: docs.length >= limit,
+    messages: docs.reverse().map((d) => ({
+      leadId: d.leadId.toString(),
+      from: d.from,
+      text: d.text,
+      at: d.at,
+      deliveryFailed: d.deliveryFailed,
+    })),
+  };
+}
+
 export async function addMessage(
   leadId: string,
   from: MessageSender,
