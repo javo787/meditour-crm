@@ -129,3 +129,97 @@ describe("askGemini (structured output)", () => {
     expect(r.suppressed).toBeUndefined();
   });
 });
+
+// 13:00 и 19:00 по Душанбе (UTC+5) — внутри и вне окна 12:00–17:00.
+const IN_WINDOW = new Date("2026-10-15T08:00:00Z");
+const OUT_OF_WINDOW = new Date("2026-10-15T14:00:00Z");
+const lastTurnTexts = (call: FetchCall): string[] =>
+  call.body.contents.at(-1).parts.map((p: any) => p.text ?? "");
+
+describe("askGemini: арабская графика", () => {
+  it("ответ с арабскими буквами возвращается на переписывание, уходит чистый вариант", async () => {
+    const calls = mockGemini([
+      { text: json(["سلام، ممنون"], false, "tg") },
+      { text: json(["Салом, ташаккур"], false, "tg") },
+    ]);
+    const { askGemini } = await load();
+
+    const r = await askGemini({ history: [], items, now: OUT_OF_WINDOW });
+
+    expect(r.messages).toEqual(["Салом, ташаккур"]);
+    expect(r.suppressed).toBeUndefined();
+    expect(calls).toHaveLength(2);
+    expect(lastTurnTexts(calls[1]).at(-1)).toContain("арабск");
+    // подсказка — только в запросе, в историю диалога не попадает
+    expect(calls[1].body.contents).toHaveLength(calls[0].body.contents.length);
+  });
+
+  it("арабская графика не ушла после повторов: пузырь не отправляется, диалог — координатору", async () => {
+    const calls = mockGemini([{ text: json(["سلام"], false, "tg") }]);
+    const { askGemini } = await load();
+
+    const r = await askGemini({ history: [], items, now: OUT_OF_WINDOW });
+
+    expect(calls).toHaveLength(3); // исходный запрос + 2 повтора
+    expect(r.messages).toEqual([]);
+    expect(r.suppressed).toBe("arabic-script");
+  });
+
+  it("частично арабский ответ: чистые пузыри уходят, с арабскими буквами — нет", async () => {
+    mockGemini([{ text: json(["Салом", "سلام"], false, "tg") }]);
+    const { askGemini } = await load();
+
+    const r = await askGemini({ history: [], items, now: OUT_OF_WINDOW });
+
+    expect(r.messages).toEqual(["Салом"]);
+    expect(r.suppressed).toBeUndefined();
+  });
+
+  it("handoff из отклонённого ответа не теряется", async () => {
+    mockGemini([
+      { text: json(["سلام"], true, "tg") },
+      { text: json(["Салом, ташаккур"], false, "tg") },
+    ]);
+    const { askGemini } = await load();
+
+    const r = await askGemini({ history: [], items, now: OUT_OF_WINDOW });
+
+    expect(r.messages).toEqual(["Салом, ташаккур"]);
+    expect(r.handoff).toBe(true);
+  });
+});
+
+describe("askGemini: приглашение на звонок в рабочее окно", () => {
+  it("в окне 12:00–17:00 подсказка дописывается к последнему сообщению пациента, а не в системный промпт", async () => {
+    const inCalls = mockGemini([{ text: json(["Салом! Чӣ тавр кӯмак карда метавонам?"], false, "tg") }]);
+    const { askGemini } = await load();
+    await askGemini({ history: [], items, now: IN_WINDOW });
+
+    const outCalls = mockGemini([{ text: json(["Салом! Чӣ тавр кӯмак карда метавонам?"], false, "tg") }]);
+    await askGemini({ history: [], items, now: OUT_OF_WINDOW });
+
+    const inTexts = lastTurnTexts(inCalls[0]);
+    expect(inTexts[0]).toBe(items[0].text);
+    expect(inTexts.at(-1)).toContain("Служебная подсказка");
+    expect(inTexts.at(-1)).toContain("созвониться");
+
+    const outTexts = lastTurnTexts(outCalls[0]);
+    expect(outTexts).toEqual([items[0].text]);
+
+    // системный промпт одинаков в обоих случаях — его кэш подсказка не ломает
+    expect(inCalls[0].body.systemInstruction).toEqual(outCalls[0].body.systemInstruction);
+  });
+
+  it("подсказка про звонок и служебная подсказка повтора идут вместе, порядок сохранён", async () => {
+    const said = "Спасибо, документы получил. Передам индийским врачам и напишу вам, как только будет ответ.";
+    const calls = mockGemini([{ text: json([said]) }, { text: json(["Уточните, пожалуйста, возраст пациента?"]) }]);
+    const { askGemini } = await load();
+
+    const r = await askGemini({ history: [aiMsg(said)], items, now: IN_WINDOW });
+
+    expect(r.messages).toEqual(["Уточните, пожалуйста, возраст пациента?"]);
+    const retryTexts = lastTurnTexts(calls[1]);
+    expect(retryTexts.some((t) => t.includes("созвониться"))).toBe(true);
+    expect(retryTexts.at(-1)).toContain("Не повторяй ни одну прежнюю мысль");
+  });
+});

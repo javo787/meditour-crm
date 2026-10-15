@@ -1,6 +1,8 @@
 import {
   capBubbles,
+  containsArabicScript,
   dropDuplicateBubbles,
+  interBubblePauseMs,
   isNearDuplicate,
   MAX_BUBBLES,
   parseModelReply,
@@ -135,5 +137,42 @@ describe("typingDelayMs", () => {
     const base = 600 + 100 * 35;
     expect(typingDelayMs("x".repeat(100), () => 0)).toBe(Math.round(base * 0.8));
     expect(typingDelayMs("x".repeat(100), () => 1)).toBe(Math.round(base * 1.2));
+  });
+});
+
+describe("interBubblePauseMs", () => {
+  it("шлюз ответил сразу (delay проигнорирован) — досыпаем время набора + пауза на «прочтение»", () => {
+    expect(interBubblePauseMs(3000, 30, () => 0)).toBe(3000 - 30 + 700);
+    expect(interBubblePauseMs(3000, 30, () => 1)).toBe(3000 - 30 + 1800);
+  });
+
+  it("шлюз сам честно ждал время набора — остаётся только короткая пауза", () => {
+    expect(interBubblePauseMs(3000, 3000, () => 0)).toBe(700);
+    expect(interBubblePauseMs(3000, 3400, () => 1)).toBe(1800);
+  });
+
+  it("никогда не отрицательная и не короче минимальной паузы", () => {
+    expect(interBubblePauseMs(0, 0, () => 0)).toBe(700);
+    expect(interBubblePauseMs(900, -500, () => 0)).toBe(900 + 700);
+    for (let i = 0; i < 50; i++) {
+      expect(interBubblePauseMs(2000, 5000)).toBeGreaterThanOrEqual(700);
+    }
+  });
+});
+
+describe("containsArabicScript", () => {
+  it("находит арабскую и персидскую графику, в том числе внутри смешанного текста", () => {
+    expect(containsArabicScript("سلام")).toBe(true);
+    expect(containsArabicScript("ممنون، مدارک را دیدم")).toBe(true);
+    expect(containsArabicScript("Салом, ташаккур سلام")).toBe(true);
+    expect(containsArabicScript("ﷲ")).toBe(true); // лигатура из Presentation Forms-A
+    expect(containsArabicScript("ﺍ")).toBe(true); // Presentation Forms-B
+  });
+
+  it("не трогает кириллицу (в том числе таджикскую), латиницу, цифры и эмодзи", () => {
+    expect(containsArabicScript("Ҳуҷҷатҳоро дидам, ташаккур, ғамхорӣ ва қуввату ӯ")).toBe(false);
+    expect(containsArabicScript("Rahmat, hujjatlarni oldim")).toBe(false);
+    expect(containsArabicScript("Здравствуйте! МРТ за 2024 год 🙏")).toBe(false);
+    expect(containsArabicScript("")).toBe(false);
   });
 });

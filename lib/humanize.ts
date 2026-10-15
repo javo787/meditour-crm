@@ -218,3 +218,38 @@ export function typingDelayMs(text: string, rand: () => number = Math.random): n
   const jitter = 0.8 + rand() * 0.4;
   return Math.round(Math.min(TYPING_MAX_MS, Math.max(TYPING_MIN_MS, raw * jitter)));
 }
+
+const READ_GAP_MIN_MS = 700;
+const READ_GAP_MAX_MS = 1800;
+
+// Пауза МЕЖДУ пузырями одного ответа, которую выдерживаем сами.
+// Параметр delay в Evolution API не гарантирует, что HTTP-запрос дождётся
+// конца «печатает…»: на части версий шлюз отвечает сразу (или игнорирует
+// delay), и тогда цикл отправки выстреливал все пузыри подряд — пациент
+// получал «стену» сообщений одновременно. Поэтому после каждой отправки
+// досыпаем недостающее до времени набора (typingMs минус то, что запрос уже
+// занял — если шлюз сам честно ждал, досыпать почти нечего) и добавляем
+// короткую паузу «прочитал, подумал» перед следующим пузырём.
+export function interBubblePauseMs(
+  typingMs: number,
+  elapsedMs: number,
+  rand: () => number = Math.random
+): number {
+  const remainingTyping = Math.max(0, typingMs - Math.max(0, elapsedMs));
+  const readGap = READ_GAP_MIN_MS + rand() * (READ_GAP_MAX_MS - READ_GAP_MIN_MS);
+  return Math.round(remainingTyping + readGap);
+}
+
+// ---------------------------------------------------------------------------
+// 4) Арабская графика
+// ---------------------------------------------------------------------------
+
+// Основной блок + Supplement + Extended-A + Presentation Forms A/B. Таджикский
+// пишется кириллицей, узбекский — латиницей, русский — кириллицей: арабские
+// и персидские буквы в ответе бота — всегда сбой модели (она иногда «уходит»
+// в персидскую графику на таджикском), и пациенту такое показывать нельзя.
+const ARABIC_SCRIPT_RE = /[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]/;
+
+export function containsArabicScript(text: string): boolean {
+  return ARABIC_SCRIPT_RE.test(text);
+}
