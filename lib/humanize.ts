@@ -240,6 +240,16 @@ export function interBubblePauseMs(
   return Math.round(remainingTyping + readGap);
 }
 
+const READ_DELAY_MIN_MS = 400;
+const READ_DELAY_MAX_MS = 1200;
+
+// Пауза между «прочитано» (синие галочки) и началом «печатает…»: человек
+// сначала открывает чат, и только потом начинает писать. Небольшая — основное
+// время ожидания пациента уже съели Gemini и сам набор текста.
+export function readDelayMs(rand: () => number = Math.random): number {
+  return Math.round(READ_DELAY_MIN_MS + rand() * (READ_DELAY_MAX_MS - READ_DELAY_MIN_MS));
+}
+
 // ---------------------------------------------------------------------------
 // 4) Арабская графика
 // ---------------------------------------------------------------------------
