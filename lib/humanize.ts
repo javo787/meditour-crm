@@ -82,6 +82,70 @@ export function capBubbles(bubbles: string[]): string[] {
   return [...head, bubbles.slice(MAX_BUBBLES - 1).join("\n")];
 }
 
+// Предложения: после . ! ? … и пробела (или перевода строки). «руб. 500»
+// иногда разрежется лишний раз — не страшно, срабатывает только на
+// пузырях длиннее BUBBLE_SOFT_MAX.
+const SENTENCE_BOUNDARY = /(?<=[.!?…])\s+|\n+/u;
+
+function packSentences(text: string, max: number): string[] {
+  const chunks: string[] = [];
+  for (const sentence of text.split(SENTENCE_BOUNDARY).map((x) => x.trim()).filter(Boolean)) {
+    const last = chunks[chunks.length - 1];
+    if (last !== undefined && last.length + 1 + sentence.length <= max) {
+      chunks[chunks.length - 1] = `${last} ${sentence}`;
+    } else {
+      chunks.push(sentence);
+    }
+  }
+  return chunks;
+}
+
+// Страховка от «стены текста». В реальных переписках до правок медиана ответа
+// была ~205 символов, а пятая часть — длиннее 300: промпт просит ≤150, но
+// модель его не всегда слушается. Длинный пузырь режем по границам
+// предложений на 2+ сообщения (они уходят с паузами, см. interBubblePauseMs) —
+// без единого лишнего токена. Предложение длиннее лимита не рубим посреди
+// фразы; больше MAX_BUBBLES сообщений не делаем — тогда пузырь остаётся как есть.
+export function splitLongBubbles(bubbles: string[], max: number = BUBBLE_SOFT_MAX): string[] {
+  let total = bubbles.length;
+  const out: string[] = [];
+  for (const bubble of bubbles) {
+    if (bubble.length <= max) {
+      out.push(bubble);
+      continue;
+    }
+    const parts = packSentences(bubble, max);
+    if (parts.length > 1 && total - 1 + parts.length <= MAX_BUBBLES) {
+      out.push(...parts);
+      total += parts.length - 1;
+    } else {
+      out.push(bubble);
+    }
+  }
+  return out;
+}
+
+// До правок «!» был почти в каждом втором ответе бота (46,6% пузырей), хотя
+// промпт просил «восклицательные знаки — редко»: мягкое правило модель не
+// держит. Жёстко: на весь ответ — не больше одного «!» (первый остаётся,
+// чтобы приветствие не звучало сухо), остальные становятся точками; «!!!» и
+// «?!» схлопываются.
+export function limitExclamations(bubbles: string[]): string[] {
+  let used = false;
+  return bubbles.map((bubble) =>
+    bubble.replace(/\?*!+/g, (run) => {
+      const first = !used;
+      used = true;
+      if (run.includes("?")) return "?";
+      return first ? "!" : ".";
+    })
+  );
+}
+
+function polishBubbles(bubbles: string[]): string[] {
+  return limitExclamations(splitLongBubbles(bubbles));
+}
+
 export function parseModelReply(raw: string): ParsedReply {
   const cleaned = stripCodeFences(raw);
 
@@ -101,7 +165,7 @@ export function parseModelReply(raw: string): ParsedReply {
         .filter(Boolean);
       return {
         language: parsed.data.language,
-        messages: capBubbles(messages),
+        messages: polishBubbles(capBubbles(messages)),
         handoff: parsed.data.handoff ?? false,
         structured: true,
       };
@@ -111,7 +175,7 @@ export function parseModelReply(raw: string): ParsedReply {
   // Не JSON (например, запрос со схемой не прошёл и шлюз ответил обычным
   // текстом) — не теряем ответ, просто режем по строкам.
   return {
-    messages: splitIntoBubbles(sanitizeBubble(raw)),
+    messages: polishBubbles(splitIntoBubbles(sanitizeBubble(raw))),
     handoff: false,
     structured: false,
   };

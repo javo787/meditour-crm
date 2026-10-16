@@ -108,6 +108,9 @@ export interface ChatAnalysis {
     timeZone: string;
     window: string;
     byHour: number[];
+    // Сколько РАЗНЫХ пациентов писало в этот час: серия из 30 фото от одного
+    // человека поднимает byHour, но не leadsByHour — по нему видно настоящий пик.
+    leadsByHour: number[];
     inWindowShare: number | null;
   };
   callInvites: {
@@ -147,6 +150,7 @@ export function analyzeMessages(
   let patientArabic = 0;
 
   const hourCounts: number[] = new Array(24).fill(0);
+  const leadHourCounts: number[] = new Array(24).fill(0);
   let patientInWindow = 0;
 
   const turnSizes: number[] = [];
@@ -156,6 +160,7 @@ export function analyzeMessages(
 
   for (const msgs of byLead.values()) {
     const aiTexts: string[] = [];
+    const hoursSeen = new Set<number>();
     let run: { times: number[]; texts: string[] } | null = null;
 
     const flush = () => {
@@ -213,7 +218,12 @@ export function analyzeMessages(
         if (containsArabicScript(m.text)) patientArabic++;
         if (!Number.isNaN(t)) {
           const when = new Date(t);
-          hourCounts[localHour(when, window.timeZone)]++;
+          const hour = localHour(when, window.timeZone);
+          hourCounts[hour]++;
+          if (!hoursSeen.has(hour)) {
+            hoursSeen.add(hour);
+            leadHourCounts[hour]++;
+          }
           if (isInCallWindow(when, window)) patientInWindow++;
         }
       } else {
@@ -278,6 +288,7 @@ export function analyzeMessages(
       timeZone: window.timeZone,
       window: `${window.startHour}:00-${window.endHour}:00`,
       byHour: hourCounts,
+      leadsByHour: leadHourCounts,
       inWindowShare: share(patientInWindow, patient),
     },
     callInvites: {
