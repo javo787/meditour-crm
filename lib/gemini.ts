@@ -18,6 +18,7 @@ import {
   type DialogLanguage,
 } from "@/lib/humanize";
 import { callInviteHint } from "@/lib/call-window";
+import { returnGapHint } from "@/lib/return-gap";
 
 const log = createLogger("gemini");
 
@@ -63,6 +64,16 @@ type GeminiTools = Array<{ functionDeclarations: GeminiFunctionDeclaration[] }>;
 
 function roleFor(from: ChatMessage["from"]): "user" | "model" {
   return from === "ai" ? "model" : "user";
+}
+
+// Сообщение координатора (живого человека, который пишет пациенту с телефона
+// или из CRM) раньше уходило в модель как реплика пациента: «Позвоним завтра
+// в 12:00» читалось как слова самого пациента. Теперь это служебная пометка в
+// ходе «user» — не от лица пациента и не от лица модели (в её ходах пометок
+// нет, поэтому копировать формат ей не с чего).
+function historyText(m: ChatMessage): string {
+  if (m.from !== "coordinator") return m.text;
+  return `(Служебная пометка, не реплика пациента: координатор Meditur — живой человек — сам написал пациенту: «${m.text}»)`;
 }
 
 // Формат ответа WhatsApp-бота — structured output (JSON по схеме), а не
@@ -392,7 +403,7 @@ export async function askGemini(params: {
 
   const contents = params.history.map((m) => ({
     role: roleFor(m.from),
-    parts: [{ text: m.text }] as GeminiPart[],
+    parts: [{ text: historyText(m) }] as GeminiPart[],
   }));
 
   const newParts: GeminiPart[] = [];
@@ -430,7 +441,10 @@ export async function askGemini(params: {
   // В рабочее окно (12:00–17:00) — короткая подсказка «позови на звонок».
   // Дописывается к последнему сообщению пациента, а не в системный промпт,
   // чтобы не ломать его explicit-кэш (подробности — в lib/call-window.ts).
-  const windowHint = callInviteHint(params.now ?? new Date());
+  const now = params.now ?? new Date();
+  const windowHint = callInviteHint(now);
+  // Пациент вернулся после паузы (больше суток с последнего сообщения).
+  const returnHint = returnGapHint(params.history[params.history.length - 1]?.at, now);
 
   logger.info("askGemini: отправка запроса", {
     models: MODELS,
@@ -440,6 +454,7 @@ export async function askGemini(params: {
     audioCount,
     totalTextLength,
     callInviteHint: Boolean(windowHint),
+    returnHint: Boolean(returnHint),
   });
 
   // Что пациент уже слышал от нас — для защиты от повторов. Системные
@@ -447,7 +462,7 @@ export async function askGemini(params: {
   const recentAiTexts = params.history.filter((m) => m.from === "ai").map((m) => m.text);
 
   const generate = async (nudge?: string) => {
-    const hints = [windowHint, nudge].filter((h): h is string => Boolean(h));
+    const hints = [returnHint, windowHint, nudge].filter((h): h is string => Boolean(h));
     const { text } = await generateWithFallback(
       hints.length > 0 ? withNudge(contents, hints) : contents,
       MEDITUR_SYSTEM_PROMPT,
