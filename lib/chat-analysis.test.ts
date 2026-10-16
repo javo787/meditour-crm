@@ -86,6 +86,22 @@ describe("analyzeMessages", () => {
     expect(r.patientActivity.inWindowShare).toBe(0.667);
   });
 
+  it("leadsByHour считает разных пациентов, а не сообщения: серия от одного не выглядит пиком", () => {
+    const burst = analyzeMessages(
+      [
+        msg("A", "patient", "фото 1", "2026-10-15T08:00:00.000Z"),
+        msg("A", "patient", "фото 2", "2026-10-15T08:01:00.000Z"),
+        msg("A", "patient", "фото 3", "2026-10-15T08:02:00.000Z"),
+        msg("B", "patient", "Салом", "2026-10-15T08:30:00.000Z"),
+      ],
+      window
+    );
+    expect(burst.patientActivity.byHour[13]).toBe(4);
+    expect(burst.patientActivity.leadsByHour[13]).toBe(2);
+    expect(r.patientActivity.leadsByHour[13]).toBe(1);
+    expect(r.patientActivity.leadsByHour[19]).toBe(1);
+  });
+
   it("зовёт ли бот на звонок: в окне — да, вне окна — нет", () => {
     expect(r.callInvites.inWindow).toEqual({ turns: 1, withCallMentionShare: 1 });
     expect(r.callInvites.outOfWindow).toEqual({ turns: 1, withCallMentionShare: 0 });

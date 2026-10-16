@@ -4,12 +4,14 @@ import {
   dropDuplicateBubbles,
   interBubblePauseMs,
   isNearDuplicate,
+  limitExclamations,
   MAX_BUBBLES,
   parseModelReply,
   readDelayMs,
   sanitizeBubble,
   similarity,
   splitIntoBubbles,
+  splitLongBubbles,
   typingDelayMs,
 } from "./humanize";
 
@@ -191,6 +193,69 @@ describe("readDelayMs", () => {
       expect(ms).toBeGreaterThanOrEqual(400);
       expect(ms).toBeLessThanOrEqual(1200);
     }
+  });
+});
+
+describe("splitLongBubbles", () => {
+  const s1 = "Документы получил, передал врачам на разбор и оценку вашего случая.";
+  const s2 =
+    "Обычно ответ клиники приходит в течение двух-трёх рабочих дней после отправки. Это стандартный срок для такого типа обращений.";
+  const s3 = "Как только придёт заключение, я сразу напишу вам и объясню, какие шаги дальше.";
+
+  it("не трогает короткие пузыри", () => {
+    expect(splitLongBubbles(["Салом.", "Хорошо, жду."])).toEqual(["Салом.", "Хорошо, жду."]);
+  });
+
+  it("режет «стену текста» по границам предложений, ничего не теряя", () => {
+    const wall = `${s1} ${s2} ${s3}`;
+    expect(wall.length).toBeGreaterThan(240);
+    const out = splitLongBubbles([wall]);
+    expect(out.length).toBe(2);
+    expect(out.every((b) => b.length <= 240)).toBe(true);
+    expect(out.join(" ")).toBe(wall);
+  });
+
+  it("предложение длиннее лимита остаётся целым — посреди фразы не рубим", () => {
+    const long = "слово ".repeat(60).trim() + ".";
+    expect(splitLongBubbles([long])).toEqual([long]);
+  });
+
+  it("не превышает MAX_BUBBLES: когда места нет, пузырь остаётся длинным", () => {
+    const wall = `${s1} ${s2} ${s3}`;
+    const out = splitLongBubbles([wall, wall, wall, wall]);
+    expect(out.length).toBeLessThanOrEqual(MAX_BUBBLES);
+    expect(out.join(" ")).toBe([wall, wall, wall, wall].join(" "));
+  });
+
+  it("parseModelReply применяет разбивку к структурированному ответу", () => {
+    const wall = `${s1} ${s2} ${s3}`;
+    const r = parseModelReply(JSON.stringify({ language: "ru", messages: [wall], handoff: false }));
+    expect(r.messages.length).toBe(2);
+  });
+});
+
+describe("limitExclamations", () => {
+  it("оставляет только первый «!» за весь ответ, остальные — точки", () => {
+    expect(limitExclamations(["Здравствуйте! Рад помочь!", "Отлично! Жду документы!"])).toEqual([
+      "Здравствуйте! Рад помочь.",
+      "Отлично. Жду документы.",
+    ]);
+  });
+
+  it("сворачивает «!!!» и «?!», не оставляя странных сочетаний", () => {
+    expect(limitExclamations(["Что?! Правда!!!"])).toEqual(["Что? Правда."]);
+  });
+
+  it("ответ без «!» и пустой список не меняются", () => {
+    expect(limitExclamations(["Хорошо, жду."])).toEqual(["Хорошо, жду."]);
+    expect(limitExclamations([])).toEqual([]);
+  });
+
+  it("parseModelReply применяет ограничение", () => {
+    const r = parseModelReply(
+      JSON.stringify({ language: "ru", messages: ["Салом! Ташаккур!", "Ҳамааш хуб!"], handoff: false })
+    );
+    expect(r.messages.join(" ").match(/!/g)).toHaveLength(1);
   });
 });
 
