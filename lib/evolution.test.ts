@@ -152,3 +152,100 @@ describe("sendWhatsAppText", () => {
     expect(global.fetch).toHaveBeenCalledTimes(3);
   });
 });
+
+describe("markWhatsAppMessagesRead", () => {
+  const originalEnv = process.env;
+
+  beforeEach(() => {
+    jest.resetModules();
+    process.env = {
+      ...originalEnv,
+      EVOLUTION_API_URL: "http://api.evolution.local",
+      EVOLUTION_API_KEY: "test-api-key",
+      EVOLUTION_INSTANCE: "test-instance",
+    };
+    delete process.env.WHATSAPP_MARK_READ;
+    global.fetch = jest.fn();
+  });
+
+  afterAll(() => {
+    process.env = originalEnv;
+    jest.restoreAllMocks();
+  });
+
+  const keys = [
+    { id: "3EB0A1", remoteJid: "992900000000@s.whatsapp.net" },
+    { id: "3EB0A2", remoteJid: "992900000000@s.whatsapp.net" },
+  ];
+
+  it("шлёт «прочитано» на /chat/markMessageAsRead с fromMe=false для каждого сообщения", async () => {
+    const { markWhatsAppMessagesRead } = await import("./evolution");
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 201 });
+
+    await expect(markWhatsAppMessagesRead(keys, "req-1")).resolves.toBe(true);
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe("http://api.evolution.local/chat/markMessageAsRead/test-instance");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toEqual({ "Content-Type": "application/json", apikey: "test-api-key" });
+    expect(JSON.parse(init.body)).toEqual({
+      readMessages: [
+        { id: "3EB0A1", fromMe: false, remoteJid: "992900000000@s.whatsapp.net" },
+        { id: "3EB0A2", fromMe: false, remoteJid: "992900000000@s.whatsapp.net" },
+      ],
+    });
+  });
+
+  it("не бросает ошибку и возвращает false, если шлюз ответил ошибкой", async () => {
+    const { markWhatsAppMessagesRead } = await import("./evolution");
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: jest.fn().mockResolvedValue("Read messages fail"),
+    });
+
+    await expect(markWhatsAppMessagesRead(keys)).resolves.toBe(false);
+    expect(global.fetch).toHaveBeenCalledTimes(1); // без повторов: это необязательный штрих
+  });
+
+  it("не бросает ошибку и возвращает false при сетевом сбое", async () => {
+    const { markWhatsAppMessagesRead } = await import("./evolution");
+    (global.fetch as jest.Mock).mockRejectedValue(new Error("ECONNRESET"));
+
+    await expect(markWhatsAppMessagesRead(keys)).resolves.toBe(false);
+  });
+
+  it("не ходит в сеть, если ключей нет, Evolution не настроен или функция выключена", async () => {
+    const { markWhatsAppMessagesRead } = await import("./evolution");
+    await expect(markWhatsAppMessagesRead([])).resolves.toBe(false);
+
+    process.env.WHATSAPP_MARK_READ = "off";
+    await expect(markWhatsAppMessagesRead(keys)).resolves.toBe(false);
+    delete process.env.WHATSAPP_MARK_READ;
+
+    delete process.env.EVOLUTION_API_URL;
+    jest.resetModules();
+    const fresh = await import("./evolution");
+    await expect(fresh.markWhatsAppMessagesRead(keys)).resolves.toBe(false);
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("отбрасывает пустые id/remoteJid и дубликаты, не отправляя мусор шлюзу", async () => {
+    const { markWhatsAppMessagesRead } = await import("./evolution");
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, status: 201 });
+
+    await markWhatsAppMessagesRead([
+      keys[0],
+      keys[0],
+      { id: "", remoteJid: "992900000000@s.whatsapp.net" },
+      { id: "3EB0A3", remoteJid: "" },
+    ]);
+
+    const body = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
+    expect(body.readMessages).toHaveLength(1);
+    expect(body.readMessages[0].id).toBe("3EB0A1");
+  });
+});
+

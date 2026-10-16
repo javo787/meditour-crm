@@ -6,6 +6,7 @@ import {
   isNearDuplicate,
   MAX_BUBBLES,
   parseModelReply,
+  readDelayMs,
   sanitizeBubble,
   similarity,
   splitIntoBubbles,
@@ -176,3 +177,20 @@ describe("containsArabicScript", () => {
     expect(containsArabicScript("")).toBe(false);
   });
 });
+
+describe("readDelayMs", () => {
+  it("лежит в диапазоне 400–1200 мс и растёт с rand", () => {
+    expect(readDelayMs(() => 0)).toBe(400);
+    expect(readDelayMs(() => 1)).toBe(1200);
+    expect(readDelayMs(() => 0.5)).toBe(800);
+  });
+
+  it("при любом rand не выходит за границы", () => {
+    for (let i = 0; i < 50; i++) {
+      const ms = readDelayMs();
+      expect(ms).toBeGreaterThanOrEqual(400);
+      expect(ms).toBeLessThanOrEqual(1200);
+    }
+  });
+});
+
