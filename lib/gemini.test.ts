@@ -223,3 +223,83 @@ describe("askGemini: приглашение на звонок в рабочее 
     expect(retryTexts.at(-1)).toContain("Не повторяй ни одну прежнюю мысль");
   });
 });
+
+// Контекст переписки: кто что сказал и сколько прошло времени.
+const NOW_CTX = new Date("2026-10-16T14:00:00Z"); // 19:00 по Душанбе — вне окна звонков
+const msgAt = (from: "patient" | "ai" | "coordinator", text: string, at: string) => ({
+  id: text,
+  leadId: "l",
+  from,
+  text,
+  at,
+});
+
+describe("askGemini: контекст переписки", () => {
+  it("сообщение координатора — служебная пометка, а не реплика пациента", async () => {
+    const calls = mockGemini([{ text: json(["Хорошо."]) }]);
+    const { askGemini } = await load();
+    await askGemini({
+      history: [
+        msgAt("patient", "Салом", "2026-10-16T10:00:00Z"),
+        msgAt("coordinator", "Позвоним вам завтра в 12:00", "2026-10-16T11:00:00Z"),
+        msgAt("ai", "Хорошо, жду.", "2026-10-16T11:05:00Z"),
+      ],
+      items,
+      now: NOW_CTX,
+    });
+
+    const turns = calls[0].body.contents;
+    expect(turns[0]).toEqual({ role: "user", parts: [{ text: "Салом" }] });
+    expect(turns[1].role).toBe("user");
+    expect(turns[1].parts[0].text).toContain("Позвоним вам завтра в 12:00");
+    expect(turns[1].parts[0].text).toContain("координатор");
+    expect(turns[1].parts[0].text).toContain("не реплика пациента");
+    expect(turns[2]).toEqual({ role: "model", parts: [{ text: "Хорошо, жду." }] });
+  });
+
+  it("пациент вернулся через 2 недели: подсказка с числом дней дописана к его сообщению, системный промпт тот же", async () => {
+    const backCalls = mockGemini([{ text: json(["Салом."]) }]);
+    const { askGemini } = await load();
+    await askGemini({
+      history: [msgAt("ai", "Жду документы.", "2026-10-02T10:00:00Z")],
+      items,
+      now: NOW_CTX,
+    });
+
+    const freshCalls = mockGemini([{ text: json(["Салом."]) }]);
+    await askGemini({
+      history: [msgAt("ai", "Жду документы.", "2026-10-16T13:00:00Z")],
+      items,
+      now: NOW_CTX,
+    });
+
+    const back = lastTurnTexts(backCalls[0]);
+    expect(back[0]).toBe(items[0].text);
+    expect(back.at(-1)).toContain("Служебная подсказка");
+    expect(back.at(-1)).toContain("14 дней");
+    expect(lastTurnTexts(freshCalls[0])).toEqual([items[0].text]);
+    expect(backCalls[0].body.systemInstruction).toEqual(freshCalls[0].body.systemInstruction);
+  });
+
+  it("первое сообщение в диалоге — подсказки о паузе нет", async () => {
+    const calls = mockGemini([{ text: json(["Салом."]) }]);
+    const { askGemini } = await load();
+    await askGemini({ history: [], items, now: NOW_CTX });
+    expect(lastTurnTexts(calls[0])).toEqual([items[0].text]);
+  });
+
+  it("возврат после паузы в рабочее окно: обе подсказки на месте, подсказка про паузу первой", async () => {
+    const calls = mockGemini([{ text: json(["Салом."]) }]);
+    const { askGemini } = await load();
+    await askGemini({
+      history: [msgAt("ai", "Жду документы.", "2026-10-02T10:00:00Z")],
+      items,
+      now: IN_WINDOW,
+    });
+    const texts = lastTurnTexts(calls[0]);
+    expect(texts).toHaveLength(3);
+    expect(texts[1]).toContain("после паузы");
+    expect(texts[2]).toContain("созвониться");
+  });
+});
+
