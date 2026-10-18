@@ -1,0 +1,146 @@
+import { hasBlockingWarnings, runPlanChecks } from "./checks";
+import type { PlanCheckInput } from "./checks";
+import { newPlanOptions } from "./defaults";
+import type { PlanContent, PlanWarning } from "./schema";
+import { prepareSource } from "./source";
+import { FICTIONAL_LETTER, fictionalContent } from "./test-fixtures";
+
+const NOW = new Date("2026-10-09T05:00:00Z");
+const base = (): PlanCheckInput => ({
+  content: fictionalContent(), options: newPlanOptions(NOW), source: prepareSource(FICTIONAL_LETTER),
+  now: NOW, senderNames: [],
+});
+const codes = (w: PlanWarning[]) => w.map((x) => x.code);
+const withRows = (amounts: string[]): PlanContent => {   // подменяет суммы в первой группе цен
+  const c = fictionalContent();
+  c.costs.groups = [{ title: "Лечение", note: "", rows: amounts.map((amount, i) => ({ label: `Строка ${i}`, clinicId: "", amount, evidence: "" })) }];
+  return c;
+};
+
+it("the fictional plan has no errors and exactly the two expected warnings", () => {
+  const w = runPlanChecks(base());
+  expect(w.filter((x) => x.level === "error")).toEqual([]);
+  expect(codes(w).sort()).toEqual(["clinics-unverified", "patient-name-translit"]);
+});
+
+it("money-missing names the lost amount", () => {
+  const input = base();
+  input.content.costs.groups[0].rows.splice(1, 1);                 // пропала строка 7 200
+  const w = runPlanChecks(input).find((x) => x.code === "money-missing");
+  expect(w?.level).toBe("error");
+  expect(w?.message).toContain("7200");
+});
+
+it("money-invented points at the row", () => {
+  const input = base();
+  input.content.costs.groups[0].rows[0].amount = "6 900";
+  const w = runPlanChecks(input).find((x) => x.code === "money-invented");
+  expect(w?.path).toBe("costs.groups[0].rows[0].amount");
+});
+
+it("money-evidence: quote absent from the letter, and quote without the amount", () => {
+  const a = base(); a.content.costs.groups[0].rows[0].evidence = "Example Hospital A - USD 9999";
+  const b = base(); b.content.costs.groups[0].rows[0].evidence = "Example Hospital B - USD 7200";
+  for (const input of [a, b]) {
+    expect(runPlanChecks(input).find((x) => x.code === "money-evidence")?.path).toBe("costs.groups[0].rows[0].evidence");
+  }
+});
+
+// Review Focus №1
+it("accepts money the way letters write it and still notices a lost number", () => {
+  const source = "Surgery USD 6,800\nTotal $7600 - $9000/-\nTests USD 500-USD 800\nCost 6,800 USD";
+  const ok = runPlanChecks({ ...base(), source, content: withRows(["6 800", "7 600 – 9 000", "500 – 800"]) });
+  expect(ok.filter((x) => x.code.startsWith("money"))).toEqual([]);
+  const lost = runPlanChecks({ ...base(), source, content: withRows(["6 800", "7 600 – 9 000", "500"]) });
+  expect(lost.find((x) => x.code === "money-missing")?.message).toContain("800");
+});
+
+// Review Focus №2
+it("price-unknown-clinic: a row pointing at a clinic that is not in the list; an empty clinicId is fine", () => {
+  const input = base();
+  input.content.costs.groups[0].rows[0].clinicId = "zzz";
+  const w = runPlanChecks(input).filter((x) => x.code === "price-unknown-clinic");
+  expect(w.map((x) => x.path)).toEqual(["costs.groups[0].rows[0].clinicId"]);
+  expect(codes(runPlanChecks({ ...base(), content: withRows(["6 800"]) }))).not.toContain("price-unknown-clinic");
+});
+
+it("name-mismatch for another patient; none for a matching one (Cyrillic CRM name vs Latin letter)", () => {
+  expect(codes(runPlanChecks({ ...base(), leadName: "Иванов Иван" }))).toContain("name-mismatch");
+  const same = runPlanChecks({ ...base(), leadName: "Тестов Тест" });
+  expect(codes(same)).not.toContain("name-mismatch");
+});
+
+it("patient-name-translit disappears when the name equals the CRM name", () => {
+  const input = base(); input.content.patient.name = "Тестов Тест"; input.leadName = "Тестов Тест";
+  expect(codes(runPlanChecks(input))).not.toContain("patient-name-translit");
+});
+
+it("contact-leak: URL, e-mail and phone in printed text; evidence and letterIssues are not printed", () => {
+  for (const leak of ["см. https://example.org/a", "пишите me@example.org", "звоните +91 98765 43210"]) {
+    const input = base(); input.content.overview = [leak];
+    expect(runPlanChecks(input).find((x) => x.code === "contact-leak")?.path).toBe("overview[0]");
+  }
+  const quiet = base(); quiet.content.letterIssues = ["Письмо ссылается на https://example.org"];
+  expect(codes(runPlanChecks(quiet))).not.toContain("contact-leak");
+});
+
+it("foreign-glyph: Devanagari and emoji are errors; Greek µ, Tajik ғ, №, ≈ are fine", () => {
+  const bad = base(); bad.content.overview = ["Врач अनिл", "Готово ✅"];
+  expect(runPlanChecks(bad).filter((x) => x.code === "foreign-glyph").map((x) => x.path)).toEqual(["overview[0]", "overview[1]"]);
+  const ok = base(); ok.content.overview = ["Размер 5 µm, Ғафур, № 3, ≈ 2 недели"];
+  expect(codes(runPlanChecks(ok))).not.toContain("foreign-glyph");
+});
+
+it("verified-month-missing when the sites box is ticked without a month; clinics-unverified goes away with a month", () => {
+  const off = base(); off.options = { ...off.options, clinicsVerifiedOnSites: true };
+  expect(codes(runPlanChecks(off))).toContain("verified-month-missing");
+  expect(codes(runPlanChecks(off))).not.toContain("clinics-unverified");
+  const on = base(); on.options = { ...on.options, clinicsVerifiedOnSites: true, clinicsVerifiedMonth: "2026-09" };
+  expect(codes(runPlanChecks(on))).not.toContain("verified-month-missing");
+  expect(codes(runPlanChecks(on))).not.toContain("clinics-unverified");
+});
+
+it("sender-name is a warning for names from senderNames, case-insensitive", () => {
+  const input = { ...base(), senderNames: ["Acme Medical Assistance"] };
+  input.content.tactic.intro = "по данным acme medical assistance";
+  const w = runPlanChecks(input).find((x) => x.code === "sender-name");
+  expect(w?.level).toBe("warn");
+  expect(w?.path).toBe("tactic.intro");
+});
+
+it("doctor-not-in-letter at clinics[0].doctor", () => {
+  const input = base(); input.content.clinics[0].doctor = "Dr. Zorro Nonexistent — хирург";
+  expect(runPlanChecks(input).find((x) => x.code === "doctor-not-in-letter")?.path).toBe("clinics[0].doctor");
+});
+
+it("letter-issue: one warning per letterIssues entry", () => {
+  const input = base(); input.content.letterIssues = ["Описание клиники относится к другому госпиталю", "Число инъекций расходится"];
+  expect(runPlanChecks(input).filter((x) => x.code === "letter-issue").map((x) => x.message)).toEqual(input.content.letterIssues);
+});
+
+it("flights-stale: empty date or 31 days old → warn; 29 days or disabled → none", () => {
+  const set = (checkedOn: string, enabled = true) => {
+    const input = base(); input.content.fixed.flights = { ...input.content.fixed.flights, checkedOn, enabled };
+    return codes(runPlanChecks(input));
+  };
+  expect(set("")).toContain("flights-stale");
+  expect(set("2026-09-08")).toContain("flights-stale");        // 31 день до 2026-10-09
+  expect(set("2026-09-10")).not.toContain("flights-stale");    // 29 дней
+  expect(set("", false)).not.toContain("flights-stale");
+});
+
+it("empty-section and long-cell are info", () => {
+  const input = base(); input.content.clinics = []; input.content.stay.rows = [];
+  input.content.diagnosis.text = "x".repeat(241);
+  const w = runPlanChecks(input);
+  expect(w.filter((x) => x.code === "empty-section").map((x) => x.path).sort()).toEqual(["clinics", "stay"]);
+  expect(w.find((x) => x.code === "long-cell")?.level).toBe("info");
+});
+
+it("errors come first, then warnings, then info", () => {
+  const input = base(); input.content.overview = ["https://example.org"]; input.content.clinics = [];
+  const levels = runPlanChecks(input).map((x) => x.level);
+  expect(levels).toEqual([...levels].sort((a, b) => ["error", "warn", "info"].indexOf(a) - ["error", "warn", "info"].indexOf(b)));
+  expect(hasBlockingWarnings(runPlanChecks(input))).toBe(true);
+  expect(hasBlockingWarnings(runPlanChecks(base()))).toBe(false);
+});
