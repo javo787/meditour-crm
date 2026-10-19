@@ -29,8 +29,20 @@ const GREEN = "#6dbb4d";
 const CONTENT_WIDTH = 527;
 
 type Widths = NonNullable<ContentTable["table"]["widths"]>;
+type SectionOptions = { splitRows?: boolean; layout?: ContentTable["layout"] };
 // Раздел: таблица с собственным полем sectionTitle (pdfmake неизвестные поля игнорирует).
 type SectionNode = ContentTable & { sectionTitle: string };
+
+// Таблица диагноза: подпись на подложке, линии только между строками (над заголовком линий нет).
+const DIAGNOSIS_LAYOUT = {
+  hLineWidth: (i: number) => (i === 0 ? 0 : 0.5),
+  vLineWidth: () => 0,
+  hLineColor: () => LINE,
+  paddingLeft: () => 6,
+  paddingRight: () => 6,
+  paddingTop: () => 4,
+  paddingBottom: () => 4,
+};
 
 export interface PlanPdfInput {
   content: PlanContent;
@@ -52,7 +64,12 @@ const nonEmpty = (items: string[]): string[] => items.filter((item) => item.trim
 
 // Раздел: первая строка — заголовок (зелёная метка слева, разреженные буквы); шапка повторяется на новой странице.
 // splitRows — для длинных абзацев: строки можно рвать по страницам; таблицы и списки не рвутся.
-function sectionNode(title: string, rows: TableCell[][], widths: Widths, splitRows = false): SectionNode {
+function sectionNode(
+  title: string,
+  rows: TableCell[][],
+  widths: Widths,
+  { splitRows = false, layout = "noBorders" }: SectionOptions = {},
+): SectionNode {
   const span = widths.length;
   const heading: TableCell = {
     colSpan: span,
@@ -72,7 +89,7 @@ function sectionNode(title: string, rows: TableCell[][], widths: Widths, splitRo
       widths,
       body: [[heading, ...filler], ...rows],
     },
-    layout: "noBorders",
+    layout,
     margin: [0, 0, 0, 10],
   };
 }
@@ -102,15 +119,15 @@ function header(options: PlanOptions): Content[] {
         {
           width: "*",
           stack: [
-            { text: BRAND.tagline, bold: true, color: INDIGO, alignment: "right", fontSize: 8, characterSpacing: 0.4 },
+            { text: BRAND.tagline, bold: true, color: MUTED, alignment: "right", fontSize: 8, characterSpacing: 0.8 },
             { text: formatRuDate(options.date), color: CAPTION, alignment: "right", fontSize: 8, margin: [0, 3, 0, 0] },
           ],
         },
       ],
     },
     { canvas: [{ type: "line", x1: 0, y1: 0, x2: CONTENT_WIDTH, y2: 0, lineWidth: 0.8, lineColor: INK }], margin: [0, 6, 0, 0] },
-    { text: BRAND.title, bold: true, fontSize: 14, color: INDIGO, margin: [0, 10, 0, 2] },
-    { text: BRAND.subtitle, fontSize: 8.5, color: MUTED, margin: [0, 0, 0, 10] },
+    { text: BRAND.title, bold: true, fontSize: 16, color: INDIGO, margin: [0, 10, 0, 2] },
+    { text: BRAND.subtitle, italics: true, fontSize: 7.5, color: MUTED, margin: [0, 0, 0, 10] },
   ];
 }
 
@@ -120,7 +137,7 @@ function patientStrip(content: PlanContent, options: PlanOptions): Content {
     fillColor: TINT,
     stack: [
       { text: label, fontSize: 6.5, color: CAPTION, characterSpacing: 0.4 },
-      { text: value, bold: true, fontSize: 9, margin: [0, 2, 0, 0] },
+      { text: value, bold: true, color: INDIGO, fontSize: 9, margin: [0, 2, 0, 0] },
     ],
   });
   return {
@@ -136,14 +153,12 @@ function patientStrip(content: PlanContent, options: PlanOptions): Content {
       ],
     },
     layout: {
-      hLineWidth: () => 0.5,
-      vLineWidth: () => 0.5,
-      hLineColor: () => LINE,
-      vLineColor: () => LINE,
-      paddingLeft: () => 6,
-      paddingRight: () => 6,
-      paddingTop: () => 5,
-      paddingBottom: () => 5,
+      hLineWidth: () => 0,
+      vLineWidth: () => 0,
+      paddingLeft: () => 8,
+      paddingRight: () => 8,
+      paddingTop: () => 7,
+      paddingBottom: () => 7,
     },
     margin: [0, 0, 0, 14],
   };
@@ -170,10 +185,11 @@ function diagnosisSection(title: string, diagnosis: PlanContent["diagnosis"]): S
   return sectionNode(
     title,
     filled.map(([label, value]): TableCell[] => [
-      { text: label, color: CAPTION, fontSize: 7, characterSpacing: 0.4, margin: [0, 2, 0, 0] },
-      { text: value, margin: [0, 1, 0, 2] },
+      { text: label, color: CAPTION, fontSize: 7, characterSpacing: 0.4, fillColor: TINT },
+      { text: value, bold: true, color: INDIGO },
     ]),
     [130, "*"],
+    { layout: DIAGNOSIS_LAYOUT },
   );
 }
 
@@ -196,7 +212,7 @@ function tacticSection(tactic: PlanContent["tactic"]): SectionNode | undefined {
     const head: Content[] = item.title.trim() === "" ? [] : [{ text: item.title, bold: true }, { text: " — " }];
     rows.push([{ text: [{ text: "— " }, ...head, { text: item.text }], margin: [0, 1, 0, 3] }]);
   }
-  return sectionNode("ВОЗМОЖНАЯ ТАКТИКА ЛЕЧЕНИЯ", rows, ["*"], true);
+  return sectionNode("ВОЗМОЖНАЯ ТАКТИКА ЛЕЧЕНИЯ", rows, ["*"], { splitRows: true });
 }
 
 export function buildPlanDefinition({ content, options, status }: PlanPdfInput): TDocumentDefinitions {
@@ -224,7 +240,7 @@ export function buildPlanDefinition({ content, options, status }: PlanPdfInput):
   return {
     pageSize: "A4",
     pageMargins: [34, 36, 34, 46],
-    defaultStyle: { font: "DejaVu", fontSize: 8.5, color: INK },
+    defaultStyle: { font: "DejaVu", fontSize: 9, color: INK },
     info: { title: BRAND.title, author: "Meditur HBG" },
     ...(status === "reviewed"
       ? {}
