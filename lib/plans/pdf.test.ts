@@ -1,9 +1,18 @@
+import path from "node:path";
+
 import type { TDocumentDefinitions } from "pdfmake/interfaces";
 
-import { newPlanOptions } from "./defaults";
+import { DEJAVU_DIR } from "@/lib/pdf-fonts";
+
+import { newPlanContent, newPlanOptions } from "./defaults";
 import { buildPlanDefinition, buildPlanPdf, planPdfFilename, planSectionTitles } from "./pdf";
 import type { PlanPdfInput } from "./pdf";
-import { fictionalContent } from "./test-fixtures";
+import { fictionalContent, fullContent } from "./test-fixtures";
+
+// fontkit — зависимость pdfkit, типов у неё нет: подключаем через require, как в lib/pdf-fonts.test.ts.
+const fontkit = require("fontkit") as {
+  openSync(file: string): { hasGlyphForCodePoint(codePoint: number): boolean };
+};
 
 const NOW = new Date("2026-10-09T05:00:00Z");
 const input = (over: Partial<PlanPdfInput> = {}): PlanPdfInput =>
@@ -124,4 +133,97 @@ it("planPdfFilename", () => {
 
 it("buildPlanPdf returns a PDF", async () => {
   expect((await buildPlanPdf(input())).subarray(0, 4).toString()).toBe("%PDF");
+});
+
+it("prints every section in form order when everything is filled", () => {
+  expect(planSectionTitles(buildPlanDefinition(input({ content: fullContent() })))).toEqual([
+    "МЕДИЦИНСКИЙ ОБЗОР", "ПОДТВЕРЖДЁННЫЙ ДИАГНОЗ", "ЧТО НЕОБХОДИМО СДЕЛАТЬ В ИНДИИ", "ВОЗМОЖНАЯ ТАКТИКА ЛЕЧЕНИЯ",
+    "НЕОБХОДИМЫЕ ДОКУМЕНТЫ", "РЕКОМЕНДОВАННЫЕ КЛИНИКИ", "ПРЕДЛАГАЕМЫЙ ПОДХОД", "ОРИЕНТИРОВОЧНАЯ СТОИМОСТЬ",
+    "ПРОЕЗД И ПРЕБЫВАНИЕ", "ЧТО ВКЛЮЧЕНО", "СЛЕДУЮЩИЙ ШАГ"]);
+});
+
+it("skips documents and approach when they are empty", () => {
+  const titles = planSectionTitles(buildPlanDefinition(input()));
+  expect(titles).not.toContain("НЕОБХОДИМЫЕ ДОКУМЕНТЫ");
+  expect(titles).not.toContain("ПРЕДЛАГАЕМЫЙ ПОДХОД");
+});
+
+it("the tactic disclaimer closes the tactic+documents block", () => {
+  const withDocs = allText(buildPlanDefinition(input({ content: fullContent() })));
+  expect(withDocs.indexOf("НЕОБХОДИМЫЕ ДОКУМЕНТЫ")).toBeLessThan(withDocs.indexOf("не гарантирует результат лечения"));
+  const withoutDocs = allText(buildPlanDefinition(input()));
+  expect(withoutDocs.indexOf("ВОЗМОЖНАЯ ТАКТИКА ЛЕЧЕНИЯ")).toBeLessThan(withoutDocs.indexOf("не гарантирует результат лечения"));
+  expect(withoutDocs.indexOf("не гарантирует результат лечения")).toBeLessThan(withoutDocs.indexOf("РЕКОМЕНДОВАННЫЕ КЛИНИКИ"));
+});
+
+it("cost rows take their label from the linked clinic and format the amount", () => {
+  const text = allText(buildPlanDefinition(input()));
+  expect(text).toContain("Example A (Фаридабад)");
+  expect(text).toContain("6 800"); // разряды через неразрывный пробел (formatAmount)
+  expect(text).toContain("ОРИЕНТИРОВОЧНАЯ СТОИМОСТЬ, USD");
+  expect(text).toContain("Итоговая стоимость лечения будет определена после первичной оценки в Индии");
+});
+
+// Review Focus №2
+it("a price row pointing at an unknown clinic falls back to its own label and does not crash", async () => {
+  const content = fictionalContent();
+  content.costs.groups[0].rows[0] = { ...content.costs.groups[0].rows[0], clinicId: "zzz", label: "Прочее" };
+  expect(allText(buildPlanDefinition(input({ content })))).toContain("Прочее");
+  expect((await buildPlanPdf(input({ content }))).subarray(0, 4).toString()).toBe("%PDF");
+});
+
+it("the clinics note depends on the verification option", () => {
+  expect(allText(buildPlanDefinition(input()))).toContain("по информации принимающей стороны");
+  const on = { ...newPlanOptions(NOW), clinicsVerifiedOnSites: true, clinicsVerifiedMonth: "2026-09" };
+  expect(allText(buildPlanDefinition(input({ options: on })))).toContain("официальных сайтах клиник (сентябрь 2026 г.)");
+});
+
+it("the flights line prints the check date only when it is set", () => {
+  const content = fictionalContent();
+  content.fixed.flights.checkedOn = "2026-09-12";
+  expect(allText(buildPlanDefinition(input({ content })))).toContain("проверена 12.09.2026 и подлежит уточнению перед бронированием");
+  content.fixed.flights.checkedOn = "";
+  const text = allText(buildPlanDefinition(input({ content })));
+  expect(text).toContain("Информация о рейсах подлежит уточнению перед бронированием");
+  expect(text).not.toContain("проверена");
+});
+
+it("the default 'not included' text is used when the letter gives none; a trailing dot is not doubled", () => {
+  const content = fictionalContent();
+  content.notIncluded = "";
+  expect(allText(buildPlanDefinition(input({ content })))).toContain("Не включено: консультации, не входящие в согласованный план");
+  content.notIncluded = "перелёт.";
+  expect(allText(buildPlanDefinition(input({ content })))).toContain("Не включено: перелёт.");
+  expect(allText(buildPlanDefinition(input({ content })))).not.toContain("перелёт..");
+});
+
+it("the next-step chips follow fixed.nextSteps and the last one is green", () => {
+  const def = buildPlanDefinition(input());
+  const chips = JSON.stringify(def.content);
+  expect(chips).toContain("ПОДТВЕРЖДЕНИЕ");
+  expect(chips).toContain("#6dbb4d");
+  expect(allText(def)).toContain("Чтобы продолжить, свяжитесь с вашим координатором Meditur HBG.");
+});
+
+it("every character of the template and of the fixtures exists in DejaVu (regular and bold)", () => {
+  const text = allText(buildPlanDefinition(input({ content: fullContent() })));
+  for (const file of ["DejaVuSans.ttf", "DejaVuSans-Bold.ttf"]) {
+    const font = fontkit.openSync(path.join(DEJAVU_DIR, file));
+    const missing = [...new Set(text)].filter((ch) => !/\s/.test(ch) && !font.hasGlyphForCodePoint(ch.codePointAt(0)!));
+    expect(missing).toEqual([]);
+  }
+});
+
+// Review Focus №5
+it("extreme plans still build: 30 clinics with long cells, an empty plan, a full plan", async () => {
+  const big = fictionalContent();
+  big.clinics = Array.from({ length: 30 }, (_, i) => ({
+    ...big.clinics[0], id: `c${i + 1}`,
+    doctor: "Dr. Anna Example ".repeat(30).slice(0, 290), why: "Описание. ".repeat(60).slice(0, 290),
+  }));
+  const pdf = await buildPlanPdf(input({ content: big }));
+  expect(pdf.subarray(0, 4).toString()).toBe("%PDF");
+  expect((pdf.toString("latin1").match(/\/Type\s*\/Page[^s]/g) ?? []).length).toBeGreaterThanOrEqual(3);
+  expect((await buildPlanPdf(input({ content: newPlanContent() }))).subarray(0, 4).toString()).toBe("%PDF");
+  expect((await buildPlanPdf(input({ content: fullContent() }))).subarray(0, 4).toString()).toBe("%PDF");
 });
