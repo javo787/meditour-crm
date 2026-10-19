@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ChevronDown,
@@ -8,10 +8,12 @@ import {
   Download,
   FileText,
   Images,
+  Layers,
   Loader2,
   Play,
   RefreshCw,
   Trash2,
+  Unlink,
   Upload,
 } from "lucide-react";
 
@@ -20,8 +22,15 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { languageName, looksLikeRealName, transliterate } from "@/lib/documents";
-import type { DocumentCategory, DocumentStatus, PatientDocument } from "@/lib/types";
+import {
+  crossDocumentWarnings,
+  groupDocuments,
+  languageName,
+  looksLikeRealName,
+  suggestProfile,
+  transliterate,
+} from "@/lib/documents";
+import type { DocumentCategory, DocumentStatus, DossierProfile, PatientDocument } from "@/lib/types";
 
 const STATUS_LABEL: Record<DocumentStatus, string> = {
   new: "не разобран",
@@ -69,22 +78,35 @@ export function DocumentsPanel({
   leadId,
   leadName,
   initialDocuments,
+  initialProfile,
 }: {
   leadId: string;
   leadName: string;
   initialDocuments: PatientDocument[];
+  initialProfile: DossierProfile;
 }) {
   const [docs, setDocs] = useState(initialDocuments);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [name, setName] = useState(looksLikeRealName(leadName) ? transliterate(leadName) : "");
-  const [dob, setDob] = useState("");
-  const [gender, setGender] = useState<"" | "Male" | "Female">("");
+  const [name, setName] = useState(
+    initialProfile.name || (looksLikeRealName(leadName) ? transliterate(leadName) : "")
+  );
+  const [dob, setDob] = useState(initialProfile.dob ?? "");
+  const [gender, setGender] = useState<"" | "Male" | "Female">(initialProfile.gender ?? "");
+  const [selected, setSelected] = useState<string[]>([]); // в порядке выбора: первый — начало документа
   const fileInput = useRef<HTMLInputElement>(null);
 
+  const groups = useMemo(() => groupDocuments(docs), [docs]);
+  const crossWarnings = useMemo(() => crossDocumentWarnings(docs), [docs]);
+  const suggestion = useMemo(() => suggestProfile(docs), [docs]);
+
   const inProgress = docs.some((d) => d.status === "pending" || d.status === "processing");
-  const included = docs.filter((d) => d.status === "done" && d.include && d.category !== "other");
-  const unreviewed = included.filter((d) => !d.reviewed).length;
+  const includedGroups = groups.filter(
+    (g) => g.primary.status === "done" && g.primary.include && g.primary.category !== "other"
+  );
+  const unreviewed = includedGroups.filter((g) =>
+    g.pages.some((p) => p.status === "done" && !p.reviewed)
+  ).length;
 
   const refresh = useCallback(async () => {
     try {
@@ -94,6 +116,29 @@ export function DocumentsPanel({
       // Нет связи — оставляем то, что уже на экране; следующий опрос повторит.
     }
   }, [leadId]);
+
+  const saveProfile = useCallback(
+    (next: { name: string; dob: string; gender: "" | "Male" | "Female" }) => {
+      void fetch(`/api/leads/${leadId}/dossier/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: next.name.trim(), dob: next.dob.trim(), gender: next.gender || undefined }),
+      }).catch(() => undefined);
+    },
+    [leadId]
+  );
+
+  // Дата рождения и пол, которые модель прочитала на документах, подставляются
+  // в пустые поля (самое частое значение, минимум из двух документов).
+  useEffect(() => {
+    const nextDob = dob || suggestion.dob || "";
+    const nextGender = gender || suggestion.gender || "";
+    if (nextDob !== dob || nextGender !== gender) {
+      setDob(nextDob);
+      setGender(nextGender);
+      saveProfile({ name, dob: nextDob, gender: nextGender });
+    }
+  }, [suggestion.dob, suggestion.gender, dob, gender, name, saveProfile]);
 
   // Пока что-то разбирается — обновляем список раз в 3 секунды. Разбор идёт
   // на сервере, страницу можно закрыть и вернуться позже.
@@ -174,8 +219,36 @@ export function DocumentsPanel({
   async function deleteDoc(id: string) {
     if (!window.confirm("Удалить документ вместе с переводом?")) return;
     const res = await fetch(`/api/leads/${leadId}/documents/${id}`, { method: "DELETE" });
-    if (res.ok) setDocs((prev) => prev.filter((d) => d.id !== id));
-    else setNotice("Не удалось удалить документ");
+    if (res.ok) {
+      setSelected((prev) => prev.filter((x) => x !== id));
+      await refresh(); // страницы удалённого документа становятся самостоятельными
+    } else setNotice("Не удалось удалить документ");
+  }
+
+  function toggleSelect(id: string) {
+    setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  async function mergeSelected() {
+    setBusy("Объединяю…");
+    try {
+      const res = await fetch(`/api/leads/${leadId}/documents/merge`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: selected }),
+      });
+      const data = await res.json().catch(() => null);
+      setNotice(res.ok ? "Документы объединены: в PDF это один раздел." : data?.error ?? "Не удалось объединить");
+      if (res.ok) setSelected([]);
+      await refresh();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // «Проверено» на многостраничном документе относится ко всем его страницам.
+  async function setReviewed(pages: PatientDocument[], value: boolean) {
+    await Promise.all(pages.filter((p) => p.status === "done").map((p) => patchDoc(p.id, { reviewed: value })));
   }
 
   async function downloadPdf(force = false): Promise<void> {
@@ -190,9 +263,9 @@ export function DocumentsPanel({
       const res = await fetch(`/api/leads/${leadId}/dossier?${qs}`);
       if (!res.ok) {
         const data = await res.json().catch(() => null);
-        if (res.status === 409 && data?.code === "unreviewed") {
+        if (res.status === 409 && data?.code === "needs-confirmation") {
           setBusy(null);
-          if (window.confirm(`${data.error}. Скачать PDF всё равно?`)) return downloadPdf(true);
+          if (window.confirm(`${data.error}.\n\nСкачать PDF всё равно?`)) return downloadPdf(true);
           return;
         }
         setNotice(data?.error ?? "Не удалось собрать PDF");
@@ -252,8 +325,47 @@ export function DocumentsPanel({
           </p>
         )}
 
-        {docs.map((doc) => (
-          <DocumentRow key={doc.id} doc={doc} leadId={leadId} onPatch={patchDoc} onDelete={deleteDoc} />
+        {selected.length >= 2 && (
+          <div className="flex flex-wrap items-center gap-3 rounded-md border border-border bg-muted/30 p-2">
+            <Button size="sm" disabled={busy !== null} onClick={mergeSelected}>
+              <Layers className="mr-1.5 h-4 w-4" />
+              Объединить выбранные ({selected.length})
+            </Button>
+            <span className="text-xs text-muted-foreground">
+              Для страниц одного документа. Первый выбранный (№1) станет началом, названием и датой раздела.
+            </span>
+            <Button size="sm" variant="ghost" onClick={() => setSelected([])}>
+              Сбросить
+            </Button>
+          </div>
+        )}
+
+        {groups.map((group) => (
+          <div key={group.primary.id} className="flex flex-col gap-2">
+            <DocumentRow
+              doc={group.primary}
+              leadId={leadId}
+              pages={group.pages}
+              extraWarnings={crossWarnings.get(group.primary.id)}
+              selectionOrder={selected.indexOf(group.primary.id) + 1}
+              onToggleSelect={toggleSelect}
+              onPatch={patchDoc}
+              onSetReviewed={setReviewed}
+              onDelete={deleteDoc}
+            />
+            {group.pages.slice(1).map((page, i) => (
+              <div key={page.id} className="ml-6">
+                <DocumentRow
+                  doc={page}
+                  leadId={leadId}
+                  pageLabel={`Страница ${i + 2}`}
+                  extraWarnings={crossWarnings.get(page.id)}
+                  onPatch={patchDoc}
+                  onDelete={deleteDoc}
+                />
+              </div>
+            ))}
+          </div>
         ))}
 
         {docs.length > 0 && (
@@ -262,15 +374,33 @@ export function DocumentsPanel({
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
               <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                 Имя латиницей (как в паспорте)
-                <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Rahimov Izatullo" />
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  onBlur={() => saveProfile({ name, dob, gender })}
+                  placeholder="Rahimov Izatullo"
+                />
               </label>
               <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                 Дата рождения (необязательно)
-                <Input value={dob} onChange={(e) => setDob(e.target.value)} placeholder="19 Apr 1988" />
+                <Input
+                  value={dob}
+                  onChange={(e) => setDob(e.target.value)}
+                  onBlur={() => saveProfile({ name, dob, gender })}
+                  placeholder="19 Apr 1988"
+                />
               </label>
               <label className="flex flex-col gap-1 text-xs text-muted-foreground">
                 Пол (необязательно)
-                <select className={selectClass} value={gender} onChange={(e) => setGender(e.target.value as "" | "Male" | "Female")}>
+                <select
+                  className={selectClass}
+                  value={gender}
+                  onChange={(e) => {
+                    const g = e.target.value as "" | "Male" | "Female";
+                    setGender(g);
+                    saveProfile({ name, dob, gender: g });
+                  }}
+                >
                   <option value="">—</option>
                   <option value="Male">Male</option>
                   <option value="Female">Female</option>
@@ -278,16 +408,16 @@ export function DocumentsPanel({
               </label>
             </div>
             <div className="flex flex-wrap items-center gap-3">
-              <Button size="sm" disabled={busy !== null || inProgress || included.length === 0} onClick={() => downloadPdf()}>
+              <Button size="sm" disabled={busy !== null || inProgress || includedGroups.length === 0} onClick={() => downloadPdf()}>
                 <Download className="mr-1.5 h-4 w-4" />
                 Скачать PDF
               </Button>
               <span className="text-xs text-muted-foreground">
                 {inProgress
                   ? "Идёт разбор — PDF станет доступен после него."
-                  : included.length === 0
+                  : includedGroups.length === 0
                   ? "Нет готовых документов для PDF."
-                  : `В PDF: ${included.length}${unreviewed > 0 ? ` · не проверено: ${unreviewed}` : " · всё проверено"}`}
+                  : `В PDF: ${includedGroups.length}${unreviewed > 0 ? ` · не проверено: ${unreviewed}` : " · всё проверено"}`}
               </span>
             </div>
           </div>
@@ -300,14 +430,32 @@ export function DocumentsPanel({
 function DocumentRow({
   doc,
   leadId,
+  pages,
+  pageLabel,
+  extraWarnings,
+  selectionOrder,
+  onToggleSelect,
   onPatch,
+  onSetReviewed,
   onDelete,
 }: {
   doc: PatientDocument;
   leadId: string;
+  /** Для главного документа: все его страницы, включая первую. */
+  pages?: PatientDocument[];
+  /** Для страницы 2+: подпись; такая строка без категории/«В PDF»/«Проверено». */
+  pageLabel?: string;
+  extraWarnings?: string[];
+  selectionOrder?: number;
+  onToggleSelect?: (id: string) => void;
   onPatch: (id: string, patch: Record<string, unknown>) => Promise<void>;
+  onSetReviewed?: (pages: PatientDocument[], value: boolean) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
 }) {
+  const isPage = Boolean(pageLabel);
+  const allWarnings = [...(doc.warnings ?? []), ...(extraWarnings ?? [])];
+  const groupPages = pages ?? [doc];
+  const reviewedAll = groupPages.filter((p) => p.status === "done").every((p) => p.reviewed);
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState(doc.title ?? "");
   const [date, setDate] = useState(doc.docDate ?? "");
@@ -339,9 +487,23 @@ function DocumentRow({
             <FileText className="h-6 w-6 text-muted-foreground" />
           )}
         </a>
+        {!isPage && isDoneForSelect(doc) && onToggleSelect && (
+          <button
+            type="button"
+            onClick={() => onToggleSelect(doc.id)}
+            title="Выбрать для объединения страниц"
+            className={`flex h-5 w-5 shrink-0 items-center justify-center rounded border text-[11px] ${
+              selectionOrder ? "border-primary bg-primary text-primary-foreground" : "border-input"
+            }`}
+          >
+            {selectionOrder || ""}
+          </button>
+        )}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
+            {pageLabel && <span className="text-xs text-muted-foreground">{pageLabel} ·</span>}
             <span className="truncate text-sm font-medium">{doc.title || doc.filename}</span>
+            {doc.handwritten && <Badge variant="outline">рукописный</Badge>}
             <Badge variant={doc.status === "failed" ? "destructive" : isDone ? "secondary" : "outline"}>
               {busyStatus && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
               {STATUS_LABEL[doc.status]}
@@ -360,15 +522,26 @@ function DocumentRow({
               {open ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </Button>
           )}
+          {isPage && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={() => onPatch(doc.id, { unmerge: true })}
+              title="Отделить от документа"
+            >
+              <Unlink className="h-4 w-4" />
+            </Button>
+          )}
           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => onDelete(doc.id)} title="Удалить">
             <Trash2 className="h-4 w-4" />
           </Button>
         </div>
       </div>
 
-      {doc.warnings && doc.warnings.length > 0 && (
+      {allWarnings.length > 0 && (
         <ul className="mt-2 flex flex-col gap-1">
-          {doc.warnings.map((w) => (
+          {allWarnings.map((w) => (
             <li key={w} className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               {w}
@@ -384,7 +557,7 @@ function DocumentRow({
         </Button>
       )}
 
-      {isDone && (
+      {isDone && !isPage && (
         <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2">
           <select
             className={selectClass}
@@ -402,8 +575,14 @@ function DocumentRow({
           </label>
           {doc.category !== "other" && (
             <label className="flex items-center gap-1.5 text-sm">
-              <input type="checkbox" checked={doc.reviewed} onChange={(e) => onPatch(doc.id, { reviewed: e.target.checked })} />
-              Проверено
+              <input
+                type="checkbox"
+                checked={reviewedAll}
+                onChange={(e) =>
+                  onSetReviewed ? onSetReviewed(groupPages, e.target.checked) : onPatch(doc.id, { reviewed: e.target.checked })
+                }
+              />
+              Проверено{groupPages.length > 1 ? ` (все ${groupPages.length} стр.)` : ""}
             </label>
           )}
           <Button size="sm" variant="ghost" onClick={() => onPatch(doc.id, { queue: true })} title="Прочитать заново">
@@ -457,4 +636,9 @@ function DocumentRow({
       )}
     </div>
   );
+}
+
+// Выбирать для объединения можно только разобранные документы.
+function isDoneForSelect(doc: PatientDocument) {
+  return doc.status === "done";
 }

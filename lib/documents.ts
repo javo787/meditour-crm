@@ -133,8 +133,11 @@ export function compareNames(a: string | undefined, b: string | undefined): "mat
   if (ta.length === 0 || tb.length === 0) return "unknown";
   for (const x of ta) {
     for (const y of tb) {
-      const limit = Math.min(x.length, y.length) >= 6 ? 2 : 1;
-      if (x.slice(0, 4) === y.slice(0, 4) || editDistance(x, y) <= limit) return "match";
+      // Допуск растёт с длиной слова: Bobojonov ↔ Bobochnovo — одно имя, а
+      // Bobojonov ↔ Boboeva (общее только начало «Bobo») — разные.
+      const shortest = Math.min(x.length, y.length);
+      const limit = shortest >= 9 ? 3 : shortest >= 6 ? 2 : 1;
+      if (editDistance(x, y) <= limit) return "match";
     }
   }
   return "mismatch";
@@ -148,6 +151,9 @@ export interface ExtractedDocument {
   docDate?: string;
   sourceLanguage?: string;
   patientNameOnDoc?: string;
+  patientDob?: string;
+  patientGender?: "Male" | "Female";
+  handwritten: boolean;
   originalText: string;
   translationEn: string;
   uncertain: string[];
@@ -166,13 +172,20 @@ export function parseExtractionJson(raw: string): ExtractedDocument {
 
   const category: DocumentCategory =
     parsed.category === "report" || parsed.category === "imaging" ? parsed.category : "other";
-  const date = str(parsed.docDate);
+  const orUndefined = (v: unknown) => {
+    const t = str(v);
+    return t && t.toLowerCase() !== "null" ? t : undefined;
+  };
+  const gender = str(parsed.patientGender).toLowerCase();
   return {
     category,
     title: str(parsed.title) || "Untitled document",
-    docDate: date && date.toLowerCase() !== "null" ? date : undefined,
+    docDate: orUndefined(parsed.docDate),
     sourceLanguage: str(parsed.sourceLanguage) || undefined,
-    patientNameOnDoc: str(parsed.patientNameOnDoc) || undefined,
+    patientNameOnDoc: orUndefined(parsed.patientNameOnDoc),
+    patientDob: orUndefined(parsed.patientDob),
+    patientGender: gender.startsWith("m") ? "Male" : gender.startsWith("f") ? "Female" : undefined,
+    handwritten: parsed.handwritten === true,
     originalText: category === "report" ? str(parsed.originalText) : "",
     translationEn: category === "report" ? str(parsed.translationEn) : "",
     uncertain: Array.isArray(parsed.uncertain)
@@ -181,17 +194,32 @@ export function parseExtractionJson(raw: string): ExtractedDocument {
   };
 }
 
+/** Доля строк, где текст не прочитан вовсе (одно «(illegible)» без содержания). */
+export function illegibleLineStats(text: string): { total: number; empty: number } {
+  const lines = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  const empty = lines.filter((l) => l.replace(/\(illegible\)/gi, "").replace(/[^\p{L}\p{N}]/gu, "").length < 4).length;
+  return { total: lines.length, empty };
+}
+
+/** Почти весь документ не прочитан — в PDF такой лист только занимает место. */
+export function isMostlyIllegible(text: string): boolean {
+  const { total, empty } = illegibleLineStats(text);
+  return empty >= 3 && total > 0 && empty / total >= 0.4;
+}
+
 /** Предупреждения для координатора (по-русски), показываются в панели. */
 export function buildWarnings(params: {
   extracted: ExtractedDocument;
   leadName?: string;
+  /** Имя пациента латиницей из профиля досье — главный эталон для сверки имён. */
+  profileName?: string;
 }): string[] {
-  const { extracted, leadName } = params;
+  const { extracted, leadName, profileName } = params;
   const warnings: string[] = [];
 
   if (extracted.category === "report") {
     if (!extracted.translationEn) {
-      warnings.push("Перевод пустой — модель не вернула текст. Нажмите «Повторить».");
+      warnings.push("Перевод пустой — модель не вернула текст. Нажмите «Заново».");
     } else {
       const missing = missingNumbers(extracted.originalText, extracted.translationEn);
       if (missing.length > 0) {
@@ -199,23 +227,185 @@ export function buildWarnings(params: {
           `В переводе не найдены числа из оригинала: ${missing.slice(0, 8).join(", ")}${missing.length > 8 ? "…" : ""}. Сверьте с фото.`
         );
       }
+      if (isMostlyIllegible(extracted.translationEn)) {
+        warnings.push("Почти весь текст неразборчив — документ не включён в PDF. Включите вручную, если он всё же нужен.");
+      }
     }
     if (extracted.uncertain.length > 0) {
       warnings.push(`Есть неразборчивые места (${extracted.uncertain.length}) — проверьте по фото.`);
     }
+    if (extracted.handwritten) {
+      warnings.push("Рукописный документ: названия препаратов, дозы и даты обязательно сверьте с фото.");
+    }
   }
 
-  if (
-    extracted.patientNameOnDoc &&
-    leadName &&
-    looksLikeRealName(leadName) &&
-    compareNames(extracted.patientNameOnDoc, leadName) === "mismatch"
-  ) {
+  const reference = profileName?.trim() || (leadName && looksLikeRealName(leadName) ? leadName : undefined);
+  if (extracted.patientNameOnDoc && reference && compareNames(extracted.patientNameOnDoc, reference) === "mismatch") {
     warnings.push(
-      `Имя в документе («${extracted.patientNameOnDoc}») не похоже на имя лида («${leadName}») — возможно, чужой документ.`
+      `Имя в документе («${extracted.patientNameOnDoc}») не похоже на имя пациента («${reference}») — возможно, чужой документ.`
     );
   }
   return warnings;
+}
+
+// ───────────────────────── многостраничные документы и сверка между документами ─────────────────────────
+
+export interface DocumentGroup {
+  /** Первая страница: от неё название, дата и категория раздела. */
+  primary: PatientDocument;
+  /** Все страницы по порядку, включая первую. */
+  pages: PatientDocument[];
+}
+
+/**
+ * Склеивает страницы: документы с mergedInto идут за своим главным документом.
+ * Если главный документ удалён (или сам оказался страницей), страница
+ * остаётся самостоятельным документом.
+ */
+export function groupDocuments(docs: PatientDocument[]): DocumentGroup[] {
+  const byId = new Map(docs.map((d) => [d.id, d]));
+  const isPage = (d: PatientDocument) => {
+    const parent = d.mergedInto ? byId.get(d.mergedInto) : undefined;
+    return Boolean(parent && !parent.mergedInto);
+  };
+  const children = new Map<string, PatientDocument[]>();
+  for (const d of docs) {
+    if (d.mergedInto && isPage(d)) {
+      children.set(d.mergedInto, [...(children.get(d.mergedInto) ?? []), d]);
+    }
+  }
+  return docs
+    .filter((d) => !isPage(d))
+    .map((primary) => ({
+      primary,
+      pages: [
+        primary,
+        ...(children.get(primary.id) ?? []).sort(
+          (a, b) => (a.pageNo ?? 0) - (b.pageNo ?? 0) || a.at.localeCompare(b.at)
+        ),
+      ],
+    }));
+}
+
+function wordSet(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .split(/\s+/)
+      .filter((w) => w.length >= 3)
+  );
+}
+
+function jaccard(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let common = 0;
+  for (const w of Array.from(a)) if (b.has(w)) common++;
+  return common / (a.size + b.size - common);
+}
+
+function groupText(group: DocumentGroup, field: "originalText" | "translationEn"): string {
+  return group.pages.map((p) => p[field] ?? "").join("\n");
+}
+
+/** Пары разделов, которые почти совпадают по тексту (две фото одного документа). */
+export function findDuplicatePairs(groups: DocumentGroup[]): Array<[DocumentGroup, DocumentGroup]> {
+  const eligible = groups.filter((g) => g.primary.status === "done" && g.primary.category === "report");
+  const sets = eligible.map((g) => ({
+    original: wordSet(groupText(g, "originalText")),
+    translation: wordSet(groupText(g, "translationEn")),
+  }));
+  const pairs: Array<[DocumentGroup, DocumentGroup]> = [];
+  for (let i = 0; i < eligible.length; i++) {
+    for (let j = i + 1; j < eligible.length; j++) {
+      if (Math.min(sets[i].translation.size, sets[j].translation.size) < 15) continue;
+      const similarity = Math.max(
+        jaccard(sets[i].original, sets[j].original),
+        jaccard(sets[i].translation, sets[j].translation)
+      );
+      if (similarity >= 0.6) pairs.push([eligible[i], eligible[j]]);
+    }
+  }
+  return pairs;
+}
+
+function yearOf(value: string | undefined): number | null {
+  const ts = parseDocDate(value);
+  return ts === null ? null : new Date(ts).getUTCFullYear();
+}
+
+function majority<T>(values: T[], key: (v: T) => string): T | undefined {
+  const counts = new Map<string, { value: T; n: number }>();
+  for (const v of values) {
+    const k = key(v);
+    const entry = counts.get(k);
+    if (entry) entry.n++;
+    else counts.set(k, { value: v, n: 1 });
+  }
+  const best = Array.from(counts.values()).sort((a, b) => b.n - a.n)[0];
+  return best && best.n >= 2 ? best.value : undefined;
+}
+
+/** Самая частая дата рождения и пол среди разобранных документов — подсказка для титульной страницы. */
+export function suggestProfile(docs: PatientDocument[]): { dob?: string; gender?: "Male" | "Female" } {
+  const done = docs.filter((d) => d.status === "done");
+  const fullDobs = done.map((d) => d.patientDob).filter((v): v is string => {
+    const ts = parseDocDate(v);
+    return ts !== null && !/^\d{4}$/.test(v ?? "");
+  });
+  const dob = majority(fullDobs, (v) => String(parseDocDate(v)));
+  const gender = majority(
+    done.map((d) => d.patientGender).filter((g): g is "Male" | "Female" => Boolean(g)),
+    (g) => g
+  );
+  return { dob, gender };
+}
+
+/**
+ * Предупреждения, которые видны только при сравнении документов друг с другом:
+ * дубли, дата рождения не как у остальных, год документа далеко от остальных.
+ * Считаются на лету (не хранятся), поэтому всегда актуальны.
+ */
+export function crossDocumentWarnings(docs: PatientDocument[]): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  const add = (id: string, text: string) => result.set(id, [...(result.get(id) ?? []), text]);
+  const groups = groupDocuments(docs);
+
+  for (const [a, b] of findDuplicatePairs(groups)) {
+    add(a.primary.id, `Похоже на дубль документа «${b.primary.title ?? b.primary.filename}» — оставьте один.`);
+    add(b.primary.id, `Похоже на дубль документа «${a.primary.title ?? a.primary.filename}» — оставьте один.`);
+  }
+
+  const done = docs.filter((d) => d.status === "done" && d.category !== "other");
+
+  // Дата рождения: сверяем с самой частой по дню или, если на документе только год, по году.
+  const commonDob = suggestProfile(docs).dob;
+  if (commonDob) {
+    const commonTs = parseDocDate(commonDob);
+    const commonYear = yearOf(commonDob);
+    for (const d of done) {
+      const ts = parseDocDate(d.patientDob);
+      if (!d.patientDob || ts === null) continue;
+      const yearOnly = /^\d{4}$/.test(d.patientDob.trim());
+      const differs = yearOnly ? yearOf(d.patientDob) !== commonYear : ts !== commonTs;
+      if (differs) {
+        add(d.id, `Дата рождения в документе (${d.patientDob}) не совпадает с остальными (${commonDob}) — проверьте, тот ли это пациент.`);
+      }
+    }
+  }
+
+  // Год документа далеко от медианы: так выглядит ошибка чтения цифр (2026 → 2020).
+  const years = done.map((d) => yearOf(d.docDate)).filter((y): y is number => y !== null).sort((a, b) => a - b);
+  if (years.length >= 3) {
+    const median = years[Math.floor(years.length / 2)];
+    for (const d of done) {
+      const y = yearOf(d.docDate);
+      if (y !== null && Math.abs(y - median) >= 3) {
+        add(d.id, `Год документа (${y}) сильно отличается от остальных (около ${median}) — сверьте дату с фото.`);
+      }
+    }
+  }
+  return result;
 }
 
 // ───────────────────────── даты, порядок, язык ─────────────────────────

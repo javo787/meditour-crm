@@ -16,6 +16,8 @@ const patchSchema = z
     reviewed: z.boolean().optional(),
     /** Поставить в очередь: разбор нового файла или повтор после ошибки. */
     queue: z.boolean().optional(),
+    /** Отделить страницу от документа, с которым она была объединена. */
+    unmerge: z.boolean().optional(),
   })
   .strict();
 
