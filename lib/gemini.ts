@@ -246,13 +246,24 @@ async function getOrCreatePlaybookCache(logger: any): Promise<string | null> {
 // systemInstruction (и опционально свои tools), но сетевые ретраи и парсинг
 // ответа одинаковые. Возвращает и text, и functionCall (если модель его
 // вызвала) — при пустом тексте НЕ подставляет запасную фразу, это решает
-// вызывающая сторона.
-async function generateWithFallback(
+// вызывающая сторона. В результате также `model` — модель, давшая ответ.
+//
+// keepGenerationConfig (раздел «Планы»): ответ обязан быть JSON, поэтому запрос без
+// generationConfig не отправляется никогда. Если API отклонил запрос со схемой (HTTP 400,
+// например как слишком сложной), та же модель получает один повтор без responseSchema, но с
+// responseMimeType, temperature и maxOutputTokens, без tools и без кэша. При 429/5xx и сетевых
+// ошибках схема не снимается: работает обычный перебор моделей и циклов. Без флага поведение прежнее.
+export async function generateWithFallback(
   contents: any[],
   systemInstruction: string,
   logger: any,
-  options?: { tools?: GeminiTools; cacheable?: boolean; generationConfig?: Record<string, unknown> }
-): Promise<{ text: string; functionCall?: GeminiFunctionCall }> {
+  options?: {
+    tools?: GeminiTools;
+    cacheable?: boolean;
+    generationConfig?: Record<string, unknown>;
+    keepGenerationConfig?: boolean;
+  }
+): Promise<{ text: string; functionCall?: GeminiFunctionCall; model: string }> {
   if (!API_KEY) {
     logger.error("GEMINI_API_KEY не задан");
     throw new Error("GEMINI_API_KEY не задан — добавьте его в .env.local");
@@ -263,6 +274,7 @@ async function generateWithFallback(
   let lastStatus = 0;
   let lastBody = "";
   let res: Response | undefined;
+  let answeredBy = "";
 
   for (let cycle = 1; cycle <= MAX_CYCLES; cycle++) {
     for (const model of MODELS) {
@@ -305,7 +317,17 @@ async function generateWithFallback(
       // ответ пациентам), пробуем без них. Потерять на этом ответе
       // handoff/разбивку на пузыри — не страшно (parseModelReply разберёт
       // обычный текст), а вот отвечать пациенту вообще нечем — критично.
-      if (!result.ok && (options?.tools || options?.generationConfig)) {
+      if (options?.keepGenerationConfig) {
+        // Только 400 и только если в конфиге есть схема: остальные ошибки идут обычным перебором.
+        if (!result.ok && result.status === 400 && options.generationConfig && "responseSchema" in options.generationConfig) {
+          logger.warn("Gemini: схема ответа отклонена (400), та же модель повторяет запрос в режиме JSON без схемы", {
+            model,
+          });
+          const withoutSchema = { ...options.generationConfig };
+          delete withoutSchema.responseSchema;
+          result = await callModel(model, contents, systemInstruction, undefined, undefined, logger, withoutSchema);
+        }
+      } else if (!result.ok && (options?.tools || options?.generationConfig)) {
         logger.warn("Gemini: запрос с tools/схемой ответа не удался, пробуем без них", {
           model,
           status: result.status,
@@ -315,6 +337,7 @@ async function generateWithFallback(
 
       if (result.ok) {
         res = result.res;
+        answeredBy = model;
         break;
       }
 
@@ -365,6 +388,7 @@ async function generateWithFallback(
   const functionCall = parts.find((p) => p.functionCall)?.functionCall;
 
   logger.info("Gemini: ответ получен", {
+    model: answeredBy,
     status: res.status,
     finishReason,
     blockReason,
@@ -377,7 +401,7 @@ async function generateWithFallback(
     logger.warn("Gemini: пустой ответ от модели", { finishReason, blockReason });
   }
 
-  return { text, functionCall };
+  return { text, functionCall, model: answeredBy };
 }
 
 export async function askGemini(params: {

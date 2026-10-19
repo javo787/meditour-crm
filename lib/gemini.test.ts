@@ -303,3 +303,80 @@ describe("askGemini: контекст переписки", () => {
   });
 });
 
+
+// Режим keepGenerationConfig (раздел «Планы»): ответ обязан быть JSON, поэтому запрос без generationConfig
+// не отправляется никогда; схему снимает только 400, и только на той же модели.
+describe("generateWithFallback: keepGenerationConfig", () => {
+  const cfg = {
+    temperature: 0.2,
+    responseMimeType: "application/json",
+    responseSchema: { type: "OBJECT", properties: {} },
+    maxOutputTokens: 16000,
+  };
+  const contents = [{ role: "user", parts: [{ text: "x" }] }];
+  const stubLogger = () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() });
+  const call = async (replies: Parameters<typeof mockGemini>[0]) => {
+    const calls = mockGemini(replies);
+    const { generateWithFallback } = await load();
+    const result = await generateWithFallback(contents, "sys", stubLogger(), {
+      generationConfig: cfg,
+      keepGenerationConfig: true,
+    });
+    return { calls, result };
+  };
+
+  it("a rejected schema (400) is retried on the same model as JSON mode without the schema, never as free text", async () => {
+    const { calls, result } = await call([{ ok: false, status: 400 }, { text: "{}" }]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].body.generationConfig.responseSchema).toBeDefined();
+    expect(calls[1].body.generationConfig).toEqual({
+      temperature: 0.2,
+      responseMimeType: "application/json",
+      maxOutputTokens: 16000,
+    });
+    expect(calls[1].body.tools).toBeUndefined();
+    expect(calls[1].url).toBe(calls[0].url);
+    expect(result.text).toBe("{}");
+  });
+
+  it("an overloaded model (503) moves to the next model with the schema intact", async () => {
+    const { calls, result } = await call([{ ok: false, status: 503 }, { text: "{}" }]);
+    expect(calls[1].body.generationConfig.responseSchema).toBeDefined();
+    expect(calls[1].url).not.toBe(calls[0].url);
+    expect(calls[1].url).toContain(result.model);
+  });
+
+  it("the model that answered is returned: the first one when it answers at once", async () => {
+    const { calls, result } = await call([{ text: "{}" }]);
+    expect(calls).toHaveLength(1);
+    expect(result.model).not.toBe("");
+    expect(calls[0].url).toContain(result.model);
+  });
+
+  it("a second 400 is final: it throws, and no request ever goes out without generationConfig", async () => {
+    const calls = mockGemini([{ ok: false, status: 400 }]);
+    const { generateWithFallback } = await load();
+    await expect(
+      generateWithFallback(contents, "sys", stubLogger(), { generationConfig: cfg, keepGenerationConfig: true }),
+    ).rejects.toThrow("400");
+    expect(calls).toHaveLength(2);
+    expect(calls.every((c) => c.body.generationConfig !== undefined)).toBe(true);
+  });
+
+  it("a 400 when the config has no schema to drop is final at once: one request, then the error", async () => {
+    const calls = mockGemini([{ ok: false, status: 400 }]);
+    const { generateWithFallback } = await load();
+    const noSchema = { temperature: 0.2, responseMimeType: "application/json", maxOutputTokens: 16000 };
+    await expect(
+      generateWithFallback(contents, "sys", stubLogger(), { generationConfig: noSchema, keepGenerationConfig: true }),
+    ).rejects.toThrow("400");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("without the flag the old behaviour stays: a failed request is retried with no config at all", async () => {
+    const calls = mockGemini([{ ok: false, status: 400 }, { text: "ok" }]);
+    const { generateWithFallback } = await load();
+    await generateWithFallback(contents, "sys", stubLogger(), { generationConfig: cfg });
+    expect(calls[1].body.generationConfig).toBeUndefined();
+  });
+});
