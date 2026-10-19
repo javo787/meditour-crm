@@ -1,35 +1,17 @@
-import path from "node:path";
 import pdfmake from "pdfmake";
 import type { Content, TDocumentDefinitions } from "pdfmake/interfaces";
 
 import type { DossierData } from "@/lib/dossier";
+import { ensurePdfFonts } from "@/lib/pdf-fonts";
 
 // PDF собирается чистым JS (pdfmake) прямо на сервере — без браузера: на
 // бесплатном Render (512 МБ) headless Chromium рядом с Next.js не влезает.
 // Оригиналы фото в файл не вшиваются: они уходят в WhatsApp отдельными
 // фото, а PDF остаётся лёгким (десятки КБ вместо десятков МБ).
+// Шрифты настраивает lib/pdf-fonts.ts; досье, как и раньше, набрано шрифтом Roboto.
 
 const ACCENT = "#1e3a8a";
 const MUTED = "#64748b";
-
-let fontsReady = false;
-function ensureFonts() {
-  if (fontsReady) return;
-  const dir = path.join(process.cwd(), "node_modules", "pdfmake", "fonts", "Roboto");
-  pdfmake.setFonts({
-    Roboto: {
-      normal: path.join(dir, "Roboto-Regular.ttf"),
-      bold: path.join(dir, "Roboto-Medium.ttf"),
-      italics: path.join(dir, "Roboto-Italic.ttf"),
-      bolditalics: path.join(dir, "Roboto-MediumItalic.ttf"),
-    },
-  });
-  // С диска читаются только шрифты из этой папки.
-  pdfmake.setLocalAccessPolicy((file: string) => path.resolve(file).startsWith(dir));
-  // Никаких загрузок по URL: в PDF только то, что мы сами туда положили.
-  pdfmake.setUrlAccessPolicy(() => false);
-  fontsReady = true;
-}
 
 export interface DossierPatient {
   name: string;
@@ -155,6 +137,6 @@ export async function buildDossierPdf(
   data: DossierData,
   compiledAt: Date = new Date()
 ): Promise<Buffer> {
-  ensureFonts();
+  ensurePdfFonts();
   return pdfmake.createPdf(buildDossierDefinition(patient, data, compiledAt)).getBuffer();
 }
