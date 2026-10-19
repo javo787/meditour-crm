@@ -45,6 +45,18 @@ type SectionOptions = { splitRows?: boolean; layout?: ContentTable["layout"]; co
 // Раздел: таблица с собственным полем sectionTitle (pdfmake неизвестные поля игнорирует).
 type SectionNode = ContentTable & { sectionTitle: string };
 
+// Сетка таблицы клиник: тонкие линии между строками и столбцами; под заголовком раздела и шапкой линий нет.
+const GRID_LAYOUT = {
+  hLineWidth: (i: number) => (i <= 2 ? 0 : 0.5),
+  vLineWidth: () => 0.5,
+  hLineColor: () => LINE,
+  vLineColor: () => LINE,
+  paddingLeft: () => 4,
+  paddingRight: () => 4,
+  paddingTop: () => 4,
+  paddingBottom: () => 4,
+};
+
 // Линии только между строками (без верхней и вертикальных): таблица диагноза, пребывания, вложенные таблицы.
 const LINES_LAYOUT = {
   hLineWidth: (i: number) => (i === 0 ? 0 : 0.5),
@@ -273,17 +285,21 @@ function documentsSection(documents: PlanContent["documents"]): SectionNode | un
 const CLINIC_WIDTHS: Widths = [24, 118, 92, 135, "*"];
 function clinicsSection(clinics: PlanClinic[], options: PlanOptions): SectionNode | undefined {
   if (clinics.length === 0) return undefined;
-  const rows: TableCell[][] = clinics.map((clinic, index): TableCell[] => [
-    { text: String(index + 1), color: CAPTION },
-    { text: clinic.name, bold: true, color: INDIGO },
-    { text: clinic.area.trim() === "" ? clinic.city : `${clinic.city} (${clinic.area})` },
-    { text: clinic.doctor },
-    { text: clinic.why },
-  ]);
+  const rows: TableCell[][] = clinics.map((clinic, index): TableCell[] => {
+    const fillColor = index % 2 === 1 ? ZEBRA : undefined;
+    return [
+      { text: String(index + 1), color: CAPTION, fillColor },
+      { text: clinic.name, bold: true, color: INDIGO, fillColor },
+      { text: clinic.area.trim() === "" ? clinic.city : `${clinic.city} (${clinic.area})`, fillColor },
+      { text: clinic.doctor, fillColor },
+      { text: clinic.why, fillColor },
+    ];
+  });
   const note = options.clinicsVerifiedOnSites ? verifiedClinicsNote(options.clinicsVerifiedMonth) : UNVERIFIED_CLINICS_NOTE;
   rows.push([{ text: note, italics: true, color: MUTED, fontSize: 7.5, colSpan: 5, margin: [0, 4, 0, 0] }, {}, {}, {}, {}]);
   return sectionNode("РЕКОМЕНДОВАННЫЕ КЛИНИКИ", rows, CLINIC_WIDTHS, {
     columnHeader: columnHeader([["№"], ["ГОСПИТАЛЬ"], ["ГОРОД"], ["РЕКОМЕНДУЕМЫЙ СПЕЦИАЛИСТ"], ["ПОЧЕМУ РАССМАТРИВАЕТСЯ"]]),
+    layout: GRID_LAYOUT,
   });
 }
 
@@ -322,7 +338,7 @@ function costGroupBody(group: PlanCostGroup, clinics: PlanClinic[]): TableCell[]
   ]);
 }
 
-const COST_WIDTHS: Widths = ["*", 150];
+const COST_WIDTHS: Widths = ["*", 190];
 
 // Вторая и следующие группы — отдельные таблицы: название группы стоит в шапке (повторяется на новой странице).
 function costGroupTable(group: PlanCostGroup, clinics: PlanClinic[]): ContentTable {
