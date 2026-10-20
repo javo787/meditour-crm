@@ -208,13 +208,24 @@ function PlanWorkspace({ planId }: { planId: string }) {
     [publish],
   );
 
+  // 409 «идёт генерация» приходит, когда план запустили в другой вкладке: берём состояние генерации, чтобы поля
+  // заблокировались и пошёл опрос, а не повторяли сохранение вслепую.
+  const syncGeneration = useCallback(async () => {
+    const result = await fetchPlan(planId);
+    const cur = docRef.current;
+    if (result.ok && cur && result.plan.generation.state === "running") {
+      publish({ ...cur, generation: result.plan.generation });
+    }
+  }, [planId, publish]);
+
   const saveDraft = useCallback(
     async (payload: EditPayload, version: number): Promise<SaveOutcome> => {
       const result = await patchDraft(planId, payload, version);
       if (result.plan) mergeServerMeta(result.plan);
+      if (!result.plan && result.outcome.ok === false && result.outcome.reason === "generating") void syncGeneration();
       return result.outcome;
     },
-    [planId, mergeServerMeta],
+    [planId, mergeServerMeta, syncGeneration],
   );
 
   // Принять план с сервера целиком (загрузка, конец генерации, обновление после конфликта) и сбросить очередь на его версию.
@@ -512,7 +523,7 @@ function PlanWorkspace({ planId }: { planId: string }) {
             <h2 className="break-words text-base font-semibold">{content?.patient.name || "Без имени"}</h2>
             <p className="text-sm text-muted-foreground">
               {statusLabel(doc.status, doc.generation.state)}
-              {saveText(saveState) ? ` · ${saveText(saveState)}` : ""}
+              {saveText(saveState) && !generating ? ` · ${saveText(saveState)}` : ""}
             </p>
             {saveState.status === "error" && !saveState.retrying ? (
               <p className="text-xs text-destructive">{saveState.message}</p>
