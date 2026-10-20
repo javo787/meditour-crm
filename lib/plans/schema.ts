@@ -23,7 +23,7 @@ export const PLAN_LIMITS = {
 } as const;
 
 // Остальные пределы из таблицы спецификации (§5): строки — в символах, списки — в элементах.
-const MAX = {
+export const MAX = {
   profile: 200,
   overviewItems: 12,
   indiaSteps: 20,
