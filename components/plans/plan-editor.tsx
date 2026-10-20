@@ -7,14 +7,20 @@ import { Loader2 } from "lucide-react";
 
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { AutosaveQueue, type AutosaveState, type SaveOutcome } from "@/lib/plans/autosave";
+import { amountNumbers, clinicLabel, sortRowsByAmount } from "@/lib/plans/format";
 import {
   MAX,
   PLAN_LIMITS,
+  type PlanClinic,
   type PlanContent,
+  type PlanCostGroup,
+  type PlanCostRow,
   type PlanGender,
   type PlanOptions,
+  type PlanStayRow,
   type PlanWarning,
   type TreatmentPlan,
 } from "@/lib/plans/schema";
@@ -62,7 +68,7 @@ interface ApiResult {
   data: ApiBody | null;
 }
 
-type TacticItem = PlanContent["tactic"]["items"][number];
+type TitledItem = PlanContent["tactic"]["items"][number];
 
 // Всё, что нужно разделам редактора: содержимое, блокировка во время генерации и обработчики правок.
 interface EditorContext {
@@ -487,6 +493,13 @@ function PlanWorkspace({ planId }: { planId: string }) {
         <IndiaSection ctx={ctx} />
         <TacticSection ctx={ctx} />
         <DocumentsSection ctx={ctx} />
+        <ClinicsSection ctx={ctx} />
+        <ApproachSection ctx={ctx} />
+        <CostsSection ctx={ctx} />
+        <StaySection ctx={ctx} />
+        <IncludedSection ctx={ctx} />
+        <NextStepsSection ctx={ctx} />
+        <SettingsSection ctx={ctx} />
       </>
     );
   }
@@ -884,35 +897,14 @@ function TacticSection({ ctx }: { ctx: EditorContext }) {
         disabled={locked}
         onChange={(intro) => setContent({ ...content, tactic: { ...tactic, intro } })}
       />
-      <ListEditor<TacticItem>
+      <TitledItemsEditor
         items={tactic.items}
         onChange={(items) => setContent({ ...content, tactic: { ...tactic, items } })}
-        createItem={() => ({ title: "", text: "" })}
-        renderItem={(item, index, update) => (
-          <>
-            <p className="text-sm font-medium">Пункт {index + 1}</p>
-            <TextField
-              label="Название"
-              value={item.title}
-              maxLength={MAX.itemTitle}
-              warning={atPath(warnings, `tactic.items[${index}].title`)}
-              disabled={locked}
-              onChange={(title) => update({ ...item, title })}
-            />
-            <TextAreaField
-              label="Текст"
-              value={item.text}
-              maxLength={MAX.itemText}
-              warning={atPath(warnings, `tactic.items[${index}].text`)}
-              disabled={locked}
-              onChange={(text) => update({ ...item, text })}
-            />
-          </>
-        )}
+        warnings={warnings}
+        pathPrefix="tactic.items"
+        locked={locked}
         addLabel="Добавить пункт"
         max={MAX.tacticItems}
-        disabled={locked}
-        emptyText="Пунктов нет"
       />
       <TextAreaField
         label="Оговорка о тактике"
@@ -959,5 +951,634 @@ function DocumentsSection({ ctx }: { ctx: EditorContext }) {
         emptyText="Документов нет"
       />
     </Section>
+  );
+}
+
+function ClinicsSection({ ctx }: { ctx: EditorContext }) {
+  const { content, options, locked, warnings, setContent, setOptions } = ctx;
+  const { clinics, costs } = content;
+  return (
+    <Section id="clinics" title={PLAN_SECTION_TITLES.clinics} warnings={inSection(warnings, "clinics")}>
+      <CheckboxField
+        label="Проверил по сайтам клиник"
+        checked={options.clinicsVerifiedOnSites}
+        warning={atPath(warnings, "options.clinicsVerifiedOnSites")}
+        disabled={locked}
+        onChange={(clinicsVerifiedOnSites) => setOptions({ ...options, clinicsVerifiedOnSites })}
+      />
+      {options.clinicsVerifiedOnSites ? (
+        <NativeInputField
+          label="Месяц проверки"
+          type="month"
+          value={options.clinicsVerifiedMonth}
+          warning={atPath(warnings, "options.clinicsVerifiedMonth")}
+          disabled={locked}
+          onChange={(clinicsVerifiedMonth) => setOptions({ ...options, clinicsVerifiedMonth })}
+        />
+      ) : null}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm font-medium">Порядок клиник</p>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={locked || clinics.length < 2}
+          onClick={() => setContent({ ...content, clinics: clinicsByPrice(clinics, costs.groups) })}
+        >
+          Цены по возрастанию
+        </Button>
+      </div>
+      <ListEditor<PlanClinic>
+        items={clinics}
+        onChange={(next) => setContent({ ...content, clinics: next })}
+        createItem={() => ({
+          id: nextClinicId(clinics),
+          name: "",
+          shortName: "",
+          city: "",
+          area: "",
+          doctor: "",
+          why: "",
+        })}
+        renderItem={(clinic, index, update) => (
+          <>
+            <p className="text-sm font-medium">Клиника {index + 1}</p>
+            <TextField
+              label="Название"
+              value={clinic.name}
+              maxLength={MAX.clinicName}
+              warning={atPath(warnings, `clinics[${index}].name`)}
+              disabled={locked}
+              onChange={(name) => update({ ...clinic, name })}
+            />
+            <div className="grid gap-3 sm:grid-cols-2">
+              <TextField
+                label="Короткое название"
+                value={clinic.shortName}
+                maxLength={MAX.clinicShortName}
+                warning={atPath(warnings, `clinics[${index}].shortName`)}
+                disabled={locked}
+                onChange={(shortName) => update({ ...clinic, shortName })}
+              />
+              <TextField
+                label="Город"
+                value={clinic.city}
+                maxLength={MAX.city}
+                warning={atPath(warnings, `clinics[${index}].city`)}
+                disabled={locked}
+                onChange={(city) => update({ ...clinic, city })}
+              />
+              <TextField
+                label="Район"
+                value={clinic.area}
+                maxLength={MAX.area}
+                warning={atPath(warnings, `clinics[${index}].area`)}
+                disabled={locked}
+                onChange={(area) => update({ ...clinic, area })}
+              />
+            </div>
+            <TextField
+              label="Врач"
+              value={clinic.doctor}
+              maxLength={PLAN_LIMITS.cell}
+              warning={atPath(warnings, `clinics[${index}].doctor`)}
+              disabled={locked}
+              onChange={(doctor) => update({ ...clinic, doctor })}
+            />
+            <TextAreaField
+              label="Почему эта клиника"
+              value={clinic.why}
+              maxLength={PLAN_LIMITS.cell}
+              warning={atPath(warnings, `clinics[${index}].why`)}
+              disabled={locked}
+              onChange={(why) => update({ ...clinic, why })}
+            />
+          </>
+        )}
+        addLabel="Добавить клинику"
+        max={MAX.clinics}
+        disabled={locked}
+        emptyText="Клиник нет"
+      />
+    </Section>
+  );
+}
+
+function ApproachSection({ ctx }: { ctx: EditorContext }) {
+  const { content, locked, warnings, setContent } = ctx;
+  const { approach } = content;
+  return (
+    <Section id="approach" title={PLAN_SECTION_TITLES.approach} warnings={inSection(warnings, "approach")}>
+      <TextField
+        label="Заголовок раздела"
+        value={approach.title}
+        maxLength={MAX.heading}
+        warning={atPath(warnings, "approach.title")}
+        disabled={locked}
+        onChange={(title) => setContent({ ...content, approach: { ...approach, title } })}
+      />
+      <ListEditor<string>
+        items={approach.paragraphs}
+        onChange={(paragraphs) => setContent({ ...content, approach: { ...approach, paragraphs } })}
+        createItem={() => ""}
+        renderItem={(item, index, update) => (
+          <TextAreaField
+            label={`Абзац ${index + 1}`}
+            value={item}
+            maxLength={PLAN_LIMITS.paragraph}
+            warning={atPath(warnings, `approach.paragraphs[${index}]`)}
+            disabled={locked}
+            onChange={update}
+          />
+        )}
+        addLabel="Добавить абзац"
+        max={MAX.approachParagraphs}
+        disabled={locked}
+        emptyText="Абзацев нет"
+      />
+      <TitledItemsEditor
+        items={approach.items}
+        onChange={(items) => setContent({ ...content, approach: { ...approach, items } })}
+        warnings={warnings}
+        pathPrefix="approach.items"
+        locked={locked}
+        addLabel="Добавить пункт"
+        max={MAX.tacticItems}
+      />
+      <TextAreaField
+        label="Примечание"
+        value={approach.note}
+        maxLength={MAX.note}
+        warning={atPath(warnings, "approach.note")}
+        disabled={locked}
+        onChange={(note) => setContent({ ...content, approach: { ...approach, note } })}
+      />
+    </Section>
+  );
+}
+
+function CostsSection({ ctx }: { ctx: EditorContext }) {
+  const { content, locked, warnings, setContent } = ctx;
+  const { costs, clinics } = content;
+  const clinicOptions = [
+    { value: "", label: "Клиника не выбрана" },
+    ...clinics.map((clinic) => ({ value: clinic.id, label: clinicLabel(clinic) })),
+  ];
+  return (
+    <Section id="costs" title={PLAN_SECTION_TITLES.costs} warnings={inSection(warnings, "costs")}>
+      <ListEditor<PlanCostGroup>
+        items={costs.groups}
+        onChange={(groups) => setContent({ ...content, costs: { ...costs, groups } })}
+        createItem={() => ({ title: "", note: "", rows: [] })}
+        renderItem={(group, gi, updateGroup) => (
+          <>
+            <p className="text-sm font-medium">Группа {gi + 1}</p>
+            <TextField
+              label="Заголовок группы"
+              value={group.title}
+              maxLength={MAX.groupTitle}
+              warning={atPath(warnings, `costs.groups[${gi}].title`)}
+              disabled={locked}
+              onChange={(title) => updateGroup({ ...group, title })}
+            />
+            <TextAreaField
+              label="Примечание к группе"
+              value={group.note}
+              maxLength={MAX.note}
+              warning={atPath(warnings, `costs.groups[${gi}].note`)}
+              disabled={locked}
+              onChange={(note) => updateGroup({ ...group, note })}
+            />
+            <ListEditor<PlanCostRow>
+              items={group.rows}
+              onChange={(rows) => updateGroup({ ...group, rows })}
+              createItem={() => ({ label: "", clinicId: "", amount: "", evidence: "" })}
+              renderItem={(row, ri, updateRow) => {
+                const base = `costs.groups[${gi}].rows[${ri}]`;
+                // Строка может ссылаться на клинику, которой уже нет в списке: показываем это, а не первый пункт.
+                const known = row.clinicId === "" || clinics.some((clinic) => clinic.id === row.clinicId);
+                const options = known
+                  ? clinicOptions
+                  : [...clinicOptions, { value: row.clinicId, label: "Клиника удалена из списка" }];
+                return (
+                  <>
+                    <TextField
+                      label="Услуга"
+                      value={row.label}
+                      maxLength={PLAN_LIMITS.cell}
+                      warning={atPath(warnings, `${base}.label`)}
+                      disabled={locked}
+                      onChange={(label) => updateRow({ ...row, label })}
+                    />
+                    <SelectField
+                      label="Клиника"
+                      value={row.clinicId}
+                      options={options}
+                      warning={atPath(warnings, `${base}.clinicId`)}
+                      disabled={locked}
+                      onChange={(clinicId) => updateRow({ ...row, clinicId })}
+                    />
+                    <TextField
+                      label="Сумма"
+                      value={row.amount}
+                      maxLength={MAX.amount}
+                      hint={row.evidence ? `Из письма: ${row.evidence}` : undefined}
+                      warning={atPath(warnings, `${base}.amount`)}
+                      disabled={locked}
+                      onChange={(amount) => updateRow({ ...row, amount })}
+                    />
+                  </>
+                );
+              }}
+              addLabel="Добавить строку"
+              max={MAX.rows}
+              disabled={locked}
+              emptyText="Строк нет"
+            />
+          </>
+        )}
+        addLabel="Добавить группу"
+        max={MAX.groups}
+        disabled={locked}
+        emptyText="Групп нет"
+      />
+      <TextAreaField
+        label="Сноска к стоимости"
+        value={costs.footnote}
+        maxLength={MAX.note}
+        hint={`По умолчанию: ${content.fixed.costFootnote}`}
+        warning={atPath(warnings, "costs.footnote")}
+        disabled={locked}
+        onChange={(footnote) => setContent({ ...content, costs: { ...costs, footnote } })}
+      />
+    </Section>
+  );
+}
+
+function StaySection({ ctx }: { ctx: EditorContext }) {
+  const { content, locked, warnings, setContent } = ctx;
+  const { flights } = content.fixed;
+  const { stay } = content;
+  const setFlights = (next: PlanContent["fixed"]["flights"]) =>
+    setContent({ ...content, fixed: { ...content.fixed, flights: next } });
+  const flightsOff = locked || !flights.enabled;
+  return (
+    <Section id="stay" title={PLAN_SECTION_TITLES.stay} warnings={inSection(warnings, "stay")}>
+      <CheckboxField
+        label="Показывать блок рейса"
+        checked={flights.enabled}
+        warning={atPath(warnings, "fixed.flights.enabled")}
+        disabled={locked}
+        onChange={(enabled) => setFlights({ ...flights, enabled })}
+      />
+      <div className="grid gap-3 sm:grid-cols-2">
+        <TextField
+          label="Откуда"
+          value={flights.from}
+          maxLength={MAX.place}
+          warning={atPath(warnings, "fixed.flights.from")}
+          disabled={flightsOff}
+          onChange={(from) => setFlights({ ...flights, from })}
+        />
+        <TextField
+          label="Куда"
+          value={flights.to}
+          maxLength={MAX.place}
+          warning={atPath(warnings, "fixed.flights.to")}
+          disabled={flightsOff}
+          onChange={(to) => setFlights({ ...flights, to })}
+        />
+      </div>
+      <TextAreaField
+        label="Текст о рейсе"
+        value={flights.text}
+        maxLength={MAX.note}
+        warning={atPath(warnings, "fixed.flights.text")}
+        disabled={flightsOff}
+        onChange={(text) => setFlights({ ...flights, text })}
+      />
+      <NativeInputField
+        label="Дата проверки рейса"
+        type="date"
+        value={flights.checkedOn}
+        warning={atPath(warnings, "fixed.flights.checkedOn")}
+        disabled={flightsOff}
+        onChange={(checkedOn) => setFlights({ ...flights, checkedOn })}
+      />
+      <div className="space-y-2">
+        <p className="text-sm font-medium">Строки пребывания</p>
+        <ListEditor<PlanStayRow>
+          items={stay.rows}
+          onChange={(rows) => setContent({ ...content, stay: { ...stay, rows } })}
+          createItem={() => ({ label: "", value: "", total: false })}
+          renderItem={(row, index, update) => (
+            <>
+              <TextField
+                label="Название"
+                value={row.label}
+                maxLength={PLAN_LIMITS.cell}
+                warning={atPath(warnings, `stay.rows[${index}].label`)}
+                disabled={locked}
+                onChange={(label) => update({ ...row, label })}
+              />
+              <TextField
+                label="Значение"
+                value={row.value}
+                maxLength={PLAN_LIMITS.cell}
+                warning={atPath(warnings, `stay.rows[${index}].value`)}
+                disabled={locked}
+                onChange={(value) => update({ ...row, value })}
+              />
+              <CheckboxField
+                label="Строка итога"
+                checked={row.total}
+                warning={atPath(warnings, `stay.rows[${index}].total`)}
+                disabled={locked}
+                onChange={(total) => update({ ...row, total })}
+              />
+            </>
+          )}
+          addLabel="Добавить строку"
+          max={MAX.stayRows}
+          disabled={locked}
+          emptyText="Строк нет"
+        />
+      </div>
+      <TextAreaField
+        label="Примечание"
+        value={stay.note}
+        maxLength={MAX.note}
+        warning={atPath(warnings, "stay.note")}
+        disabled={locked}
+        onChange={(note) => setContent({ ...content, stay: { ...stay, note } })}
+      />
+    </Section>
+  );
+}
+
+function IncludedSection({ ctx }: { ctx: EditorContext }) {
+  const { content, locked, warnings, setContent } = ctx;
+  const { fixed } = content;
+  return (
+    <Section id="included" title={PLAN_SECTION_TITLES.included} warnings={inSection(warnings, "included")}>
+      <div className="space-y-2">
+        <p className="text-sm font-medium">Включено</p>
+        <ListEditor<string>
+          items={content.included}
+          onChange={(included) => setContent({ ...content, included })}
+          createItem={() => ""}
+          renderItem={(item, index, update) => (
+            <TextField
+              label={`Пункт ${index + 1}`}
+              value={item}
+              maxLength={PLAN_LIMITS.cell}
+              warning={atPath(warnings, `included[${index}]`)}
+              disabled={locked}
+              onChange={update}
+            />
+          )}
+          addLabel="Добавить пункт"
+          max={MAX.included}
+          disabled={locked}
+          emptyText="Пунктов нет"
+        />
+      </div>
+      <TextAreaField
+        label="Не включено"
+        value={content.notIncluded}
+        maxLength={MAX.note}
+        warning={atPath(warnings, "notIncluded")}
+        disabled={locked}
+        onChange={(notIncluded) => setContent({ ...content, notIncluded })}
+      />
+      <div className="space-y-2">
+        <p className="text-sm font-medium">Поддержка Meditur</p>
+        <ListEditor<string>
+          items={fixed.support}
+          onChange={(support) => setContent({ ...content, fixed: { ...fixed, support } })}
+          createItem={() => ""}
+          renderItem={(item, index, update) => (
+            <TextField
+              label={`Пункт ${index + 1}`}
+              value={item}
+              maxLength={PLAN_LIMITS.cell}
+              warning={atPath(warnings, `fixed.support[${index}]`)}
+              disabled={locked}
+              onChange={update}
+            />
+          )}
+          addLabel="Добавить пункт"
+          max={MAX.support}
+          disabled={locked}
+          emptyText="Пунктов нет"
+        />
+      </div>
+    </Section>
+  );
+}
+
+function NextStepsSection({ ctx }: { ctx: EditorContext }) {
+  const { content, locked, warnings, setContent } = ctx;
+  const { fixed } = content;
+  return (
+    <Section id="nextSteps" title={PLAN_SECTION_TITLES.nextSteps} warnings={inSection(warnings, "nextSteps")}>
+      <ListEditor<string>
+        items={fixed.nextSteps}
+        onChange={(nextSteps) => setContent({ ...content, fixed: { ...fixed, nextSteps } })}
+        createItem={() => ""}
+        renderItem={(item, index, update) => (
+          <TextField
+            label={`Шаг ${index + 1}`}
+            value={item}
+            maxLength={MAX.nextStep}
+            warning={atPath(warnings, `fixed.nextSteps[${index}]`)}
+            disabled={locked}
+            onChange={update}
+          />
+        )}
+        addLabel="Добавить шаг"
+        max={MAX.nextSteps}
+        disabled={locked}
+        emptyText="Шагов нет"
+      />
+    </Section>
+  );
+}
+
+function SettingsSection({ ctx }: { ctx: EditorContext }) {
+  const { options, locked, warnings, setOptions } = ctx;
+  return (
+    <Section id="settings" title={PLAN_SECTION_TITLES.settings} warnings={inSection(warnings, "settings")}>
+      <NativeInputField
+        label="Дата плана"
+        type="date"
+        value={options.date}
+        warning={atPath(warnings, "options.date")}
+        disabled={locked}
+        onChange={(date) => setOptions({ ...options, date })}
+      />
+      <CheckboxField
+        label="Номера страниц в PDF"
+        checked={options.showPageNumbers}
+        warning={atPath(warnings, "options.showPageNumbers")}
+        disabled={locked}
+        onChange={(showPageNumbers) => setOptions({ ...options, showPageNumbers })}
+      />
+    </Section>
+  );
+}
+
+// Пары «название / текст»: тактика и подход.
+interface TitledItemsEditorProps {
+  items: TitledItem[];
+  onChange: (items: TitledItem[]) => void;
+  warnings: PlanWarning[];
+  pathPrefix: string; // путь списка в содержимом, например «tactic.items»
+  locked: boolean;
+  addLabel: string;
+  max: number;
+}
+
+function TitledItemsEditor({ items, onChange, warnings, pathPrefix, locked, addLabel, max }: TitledItemsEditorProps) {
+  return (
+    <ListEditor<TitledItem>
+      items={items}
+      onChange={onChange}
+      createItem={() => ({ title: "", text: "" })}
+      renderItem={(item, index, update) => (
+        <>
+          <p className="text-sm font-medium">Пункт {index + 1}</p>
+          <TextField
+            label="Название"
+            value={item.title}
+            maxLength={MAX.itemTitle}
+            warning={atPath(warnings, `${pathPrefix}[${index}].title`)}
+            disabled={locked}
+            onChange={(title) => update({ ...item, title })}
+          />
+          <TextAreaField
+            label="Текст"
+            value={item.text}
+            maxLength={MAX.itemText}
+            warning={atPath(warnings, `${pathPrefix}[${index}].text`)}
+            disabled={locked}
+            onChange={(text) => update({ ...item, text })}
+          />
+        </>
+      )}
+      addLabel={addLabel}
+      max={max}
+      disabled={locked}
+      emptyText="Пунктов нет"
+    />
+  );
+}
+
+// Новый id клиники: c{n} с первым свободным n. Строки стоимости ссылаются на клинику по этому id.
+function nextClinicId(clinics: PlanClinic[]): string {
+  const used = new Set(clinics.map((clinic) => clinic.id));
+  let n = clinics.length + 1;
+  while (used.has(`c${n}`)) n += 1;
+  return `c${n}`;
+}
+
+// Клиники по возрастанию самой дешёвой строки стоимости. Клиники без цены — в конце; порядок равных сохраняется.
+function clinicsByPrice(clinics: PlanClinic[], groups: PlanCostGroup[]): PlanClinic[] {
+  const rows = groups.flatMap((group) => group.rows);
+  const keyed = clinics.map((clinic) => {
+    let cheapest = "";
+    let cheapestValue = Infinity;
+    for (const row of rows) {
+      if (row.clinicId !== clinic.id) continue;
+      const value = amountNumbers(row.amount)[0] ?? Infinity;
+      if (value < cheapestValue) {
+        cheapest = row.amount;
+        cheapestValue = value;
+      }
+    }
+    return { clinic, amount: cheapest };
+  });
+  return sortRowsByAmount(keyed).map((item) => item.clinic);
+}
+
+// Флажок с подписью; предупреждения выводятся под ним.
+function CheckboxField({
+  label,
+  checked,
+  onChange,
+  warning = [],
+  disabled,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  warning?: PlanWarning[];
+  disabled?: boolean;
+}) {
+  const id = useId();
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-start gap-3">
+        <input
+          id={id}
+          type="checkbox"
+          checked={checked}
+          disabled={disabled}
+          onChange={(e) => onChange(e.target.checked)}
+          className="mt-0.5 h-4 w-4 shrink-0 accent-primary disabled:opacity-50"
+        />
+        <Label htmlFor={id} className="cursor-pointer font-normal leading-snug">
+          {label}
+        </Label>
+      </div>
+      <WarningLines warnings={warning} />
+    </div>
+  );
+}
+
+// Поле даты или месяца: нативный выбор.
+function NativeInputField({
+  label,
+  type,
+  value,
+  onChange,
+  warning = [],
+  disabled,
+}: {
+  label: string;
+  type: "date" | "month";
+  value: string;
+  onChange: (value: string) => void;
+  warning?: PlanWarning[];
+  disabled?: boolean;
+}) {
+  const id = useId();
+  const hasError = warning.some((w) => w.level === "error");
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>{label}</Label>
+      <Input
+        id={id}
+        type={type}
+        value={value}
+        disabled={disabled}
+        aria-invalid={hasError ? true : undefined}
+        className={cn(hasError && "border-destructive")}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <WarningLines warnings={warning} />
+    </div>
+  );
+}
+
+// Строки предупреждений под полем, цвет по уровню.
+function WarningLines({ warnings }: { warnings: PlanWarning[] }) {
+  return (
+    <>
+      {warnings.map((w, i) => (
+        <p key={`${w.code}-${i}`} className={cn("text-xs font-medium", LEVEL_TEXT_CLASS[w.level])}>
+          {w.message}
+        </p>
+      ))}
+    </>
   );
 }
