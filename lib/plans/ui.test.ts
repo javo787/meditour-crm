@@ -1,7 +1,10 @@
 import {
+  canReview,
   canSubmitPlan,
   formatPlanDateTime,
   isDocxName,
+  moveItem,
+  removeAt,
   sectionOfPath,
   sourceCounter,
   statusLabel,
@@ -127,5 +130,56 @@ describe("isDocxName", () => {
     expect(isDocxName("letter.doc")).toBe(false);
     expect(isDocxName("letter.docx.exe")).toBe(false);
     expect(isDocxName("letter.pdf")).toBe(false);
+  });
+});
+
+describe("moveItem и removeAt", () => {
+  it("moveItem and removeAt do not mutate", () => {
+    const a = [1, 2, 3];
+    expect(moveItem(a, 0, 2)).toEqual([2, 3, 1]);
+    expect(removeAt(a, 1)).toEqual([1, 3]);
+    expect(a).toEqual([1, 2, 3]);
+  });
+
+  it("moveItem двигает элемент вверх и вниз; неверный индекс оставляет список как есть", () => {
+    expect(moveItem([1, 2, 3], 2, 0)).toEqual([3, 1, 2]);
+    expect(moveItem([1, 2, 3], -1, 0)).toEqual([1, 2, 3]);
+    expect(moveItem([1, 2, 3], 0, 3)).toEqual([1, 2, 3]);
+  });
+
+  it("removeAt с индексом вне списка возвращает копию", () => {
+    const a = [1, 2];
+    const copy = removeAt(a, 5);
+    expect(copy).toEqual([1, 2]);
+    expect(copy).not.toBe(a);
+  });
+});
+
+describe("canReview", () => {
+  const all = { amounts: true, clinics: true, patient: true };
+
+  it("canReview needs all three confirmations and no errors", () => {
+    expect(canReview([], all)).toBe(true);
+    expect(canReview([], { ...all, patient: false })).toBe(false);
+    expect(canReview([{ code: "money-missing", level: "error", message: "x" }], all)).toBe(false);
+    expect(canReview([{ code: "clinics-unverified", level: "warn", message: "x" }], all)).toBe(true);
+  });
+
+  it("без любого из трёх подтверждений кнопка выключена", () => {
+    expect(canReview([], { ...all, amounts: false })).toBe(false);
+    expect(canReview([], { ...all, clinics: false })).toBe(false);
+  });
+
+  it("серые предупреждения и жёлтые не мешают, красное мешает даже при всех подтверждениях", () => {
+    expect(canReview([{ code: "note", level: "info", message: "x" }], all)).toBe(true);
+    expect(
+      canReview(
+        [
+          { code: "note", level: "info", message: "x" },
+          { code: "money-invented", level: "error", message: "x" },
+        ],
+        all,
+      ),
+    ).toBe(false);
   });
 });

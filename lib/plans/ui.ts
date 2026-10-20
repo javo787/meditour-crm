@@ -109,3 +109,27 @@ export function formatPlanDateTime(iso: string): string {
 export function isDocxName(name: string): boolean {
   return name.toLowerCase().endsWith(".docx");
 }
+
+// Перенос элемента списка (кнопки «вверх» / «вниз»). Возвращает новый массив; неверный индекс — копия без изменений.
+export function moveItem<T>(list: T[], from: number, to: number): T[] {
+  const next = list.slice();
+  const valid = (i: number) => Number.isInteger(i) && i >= 0 && i < list.length;
+  if (!valid(from) || !valid(to)) return next;
+  const moved = next.splice(from, 1);
+  next.splice(to, 0, ...moved);
+  return next;
+}
+
+// Удаление элемента списка по индексу. Возвращает новый массив.
+export function removeAt<T>(list: T[], index: number): T[] {
+  return list.filter((_, i) => i !== index);
+}
+
+// Можно ли отметить план проверенным: все три подтверждения отмечены и нет предупреждений уровня error (§9).
+export function canReview(
+  warnings: PlanWarning[],
+  confirmations: Record<"amounts" | "clinics" | "patient", boolean>,
+): boolean {
+  if (warnings.some((warning) => warning.level === "error")) return false;
+  return confirmations.amounts && confirmations.clinics && confirmations.patient;
+}
