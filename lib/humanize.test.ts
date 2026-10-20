@@ -1,12 +1,17 @@
 import {
   capBubbles,
+  containsArabicScript,
   dropDuplicateBubbles,
+  interBubblePauseMs,
   isNearDuplicate,
+  limitExclamations,
   MAX_BUBBLES,
   parseModelReply,
+  readDelayMs,
   sanitizeBubble,
   similarity,
   splitIntoBubbles,
+  splitLongBubbles,
   typingDelayMs,
 } from "./humanize";
 
@@ -137,3 +142,120 @@ describe("typingDelayMs", () => {
     expect(typingDelayMs("x".repeat(100), () => 1)).toBe(Math.round(base * 1.2));
   });
 });
+
+describe("interBubblePauseMs", () => {
+  it("шлюз ответил сразу (delay проигнорирован) — досыпаем время набора + пауза на «прочтение»", () => {
+    expect(interBubblePauseMs(3000, 30, () => 0)).toBe(3000 - 30 + 700);
+    expect(interBubblePauseMs(3000, 30, () => 1)).toBe(3000 - 30 + 1800);
+  });
+
+  it("шлюз сам честно ждал время набора — остаётся только короткая пауза", () => {
+    expect(interBubblePauseMs(3000, 3000, () => 0)).toBe(700);
+    expect(interBubblePauseMs(3000, 3400, () => 1)).toBe(1800);
+  });
+
+  it("никогда не отрицательная и не короче минимальной паузы", () => {
+    expect(interBubblePauseMs(0, 0, () => 0)).toBe(700);
+    expect(interBubblePauseMs(900, -500, () => 0)).toBe(900 + 700);
+    for (let i = 0; i < 50; i++) {
+      expect(interBubblePauseMs(2000, 5000)).toBeGreaterThanOrEqual(700);
+    }
+  });
+});
+
+describe("containsArabicScript", () => {
+  it("находит арабскую и персидскую графику, в том числе внутри смешанного текста", () => {
+    expect(containsArabicScript("سلام")).toBe(true);
+    expect(containsArabicScript("ممنون، مدارک را دیدم")).toBe(true);
+    expect(containsArabicScript("Салом, ташаккур سلام")).toBe(true);
+    expect(containsArabicScript("ﷲ")).toBe(true); // лигатура из Presentation Forms-A
+    expect(containsArabicScript("ﺍ")).toBe(true); // Presentation Forms-B
+  });
+
+  it("не трогает кириллицу (в том числе таджикскую), латиницу, цифры и эмодзи", () => {
+    expect(containsArabicScript("Ҳуҷҷатҳоро дидам, ташаккур, ғамхорӣ ва қуввату ӯ")).toBe(false);
+    expect(containsArabicScript("Rahmat, hujjatlarni oldim")).toBe(false);
+    expect(containsArabicScript("Здравствуйте! МРТ за 2024 год 🙏")).toBe(false);
+    expect(containsArabicScript("")).toBe(false);
+  });
+});
+
+describe("readDelayMs", () => {
+  it("лежит в диапазоне 400–1200 мс и растёт с rand", () => {
+    expect(readDelayMs(() => 0)).toBe(400);
+    expect(readDelayMs(() => 1)).toBe(1200);
+    expect(readDelayMs(() => 0.5)).toBe(800);
+  });
+
+  it("при любом rand не выходит за границы", () => {
+    for (let i = 0; i < 50; i++) {
+      const ms = readDelayMs();
+      expect(ms).toBeGreaterThanOrEqual(400);
+      expect(ms).toBeLessThanOrEqual(1200);
+    }
+  });
+});
+
+describe("splitLongBubbles", () => {
+  const s1 = "Документы получил, передал врачам на разбор и оценку вашего случая.";
+  const s2 =
+    "Обычно ответ клиники приходит в течение двух-трёх рабочих дней после отправки. Это стандартный срок для такого типа обращений.";
+  const s3 = "Как только придёт заключение, я сразу напишу вам и объясню, какие шаги дальше.";
+
+  it("не трогает короткие пузыри", () => {
+    expect(splitLongBubbles(["Салом.", "Хорошо, жду."])).toEqual(["Салом.", "Хорошо, жду."]);
+  });
+
+  it("режет «стену текста» по границам предложений, ничего не теряя", () => {
+    const wall = `${s1} ${s2} ${s3}`;
+    expect(wall.length).toBeGreaterThan(240);
+    const out = splitLongBubbles([wall]);
+    expect(out.length).toBe(2);
+    expect(out.every((b) => b.length <= 240)).toBe(true);
+    expect(out.join(" ")).toBe(wall);
+  });
+
+  it("предложение длиннее лимита остаётся целым — посреди фразы не рубим", () => {
+    const long = "слово ".repeat(60).trim() + ".";
+    expect(splitLongBubbles([long])).toEqual([long]);
+  });
+
+  it("не превышает MAX_BUBBLES: когда места нет, пузырь остаётся длинным", () => {
+    const wall = `${s1} ${s2} ${s3}`;
+    const out = splitLongBubbles([wall, wall, wall, wall]);
+    expect(out.length).toBeLessThanOrEqual(MAX_BUBBLES);
+    expect(out.join(" ")).toBe([wall, wall, wall, wall].join(" "));
+  });
+
+  it("parseModelReply применяет разбивку к структурированному ответу", () => {
+    const wall = `${s1} ${s2} ${s3}`;
+    const r = parseModelReply(JSON.stringify({ language: "ru", messages: [wall], handoff: false }));
+    expect(r.messages.length).toBe(2);
+  });
+});
+
+describe("limitExclamations", () => {
+  it("оставляет только первый «!» за весь ответ, остальные — точки", () => {
+    expect(limitExclamations(["Здравствуйте! Рад помочь!", "Отлично! Жду документы!"])).toEqual([
+      "Здравствуйте! Рад помочь.",
+      "Отлично. Жду документы.",
+    ]);
+  });
+
+  it("сворачивает «!!!» и «?!», не оставляя странных сочетаний", () => {
+    expect(limitExclamations(["Что?! Правда!!!"])).toEqual(["Что? Правда."]);
+  });
+
+  it("ответ без «!» и пустой список не меняются", () => {
+    expect(limitExclamations(["Хорошо, жду."])).toEqual(["Хорошо, жду."]);
+    expect(limitExclamations([])).toEqual([]);
+  });
+
+  it("parseModelReply применяет ограничение", () => {
+    const r = parseModelReply(
+      JSON.stringify({ language: "ru", messages: ["Салом! Ташаккур!", "Ҳамааш хуб!"], handoff: false })
+    );
+    expect(r.messages.join(" ").match(/!/g)).toHaveLength(1);
+  });
+});
+

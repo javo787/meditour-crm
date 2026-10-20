@@ -4,6 +4,10 @@
 //   delay (мс) — Evolution сам показывает «печатает…» это время и только потом шлёт
 //   сообщение (документация v2: «Presence time in milliseconds before sending message»)
 // POST /chat/getBase64FromMediaMessage/{instance} — расшифровка медиа в base64
+// POST /chat/markMessageAsRead/{instance}        — «прочитано» (синие галочки),
+//   тело { readMessages: [{ id, fromMe, remoteJid }] }; сверено с исходниками v2.3.7
+//   (chat.router.ts / readMessageSchema). Отдельный sendPresence не нужен: delay в
+//   sendText сам делает presenceSubscribe → composing → пауза → paused → отправка.
 
 import { createLogger } from "@/lib/logger";
 
@@ -87,6 +91,61 @@ export async function sendWhatsAppText(
       });
       await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt - 1]));
     }
+  }
+}
+
+export interface ReadKey {
+  id: string;
+  remoteJid: string;
+}
+
+const MARK_READ_TIMEOUT_MS = 5_000;
+
+// «Прочитано» перед ответом: человек сначала открывает чат, потом печатает.
+// Это необязательный штрих, поэтому функция НИКОГДА не бросает ошибку и не
+// повторяет запрос: сбой здесь не должен задерживать или ломать ответ
+// пациенту. Возвращает true, только если шлюз подтвердил. Выключается
+// WHATSAPP_MARK_READ=off (например, если координатору важно видеть
+// непрочитанные чаты на телефоне — «прочитано» синхронизируется на привязанное
+// устройство).
+export async function markWhatsAppMessagesRead(keys: ReadKey[], requestId?: string): Promise<boolean> {
+  if (process.env.WHATSAPP_MARK_READ?.trim().toLowerCase() === "off") return false;
+
+  const seen = new Set<string>();
+  const readMessages = keys
+    .filter((k) => k.id && k.remoteJid)
+    .filter((k) => {
+      const dedupeKey = `${k.remoteJid}|${k.id}`;
+      if (seen.has(dedupeKey)) return false;
+      seen.add(dedupeKey);
+      return true;
+    })
+    .map((k) => ({ id: k.id, fromMe: false, remoteJid: k.remoteJid }));
+  if (readMessages.length === 0) return false;
+
+  const logger = requestId ? log.child(requestId) : log;
+  try {
+    const { baseUrl, apiKey, instance } = getConfig();
+    const res = await fetch(`${baseUrl}/chat/markMessageAsRead/${instance}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", apikey: apiKey },
+      body: JSON.stringify({ readMessages }),
+      signal: AbortSignal.timeout(MARK_READ_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      logger.warn("markMessageAsRead: шлюз ответил ошибкой — идём дальше без «прочитано»", {
+        status: res.status,
+        body: (await res.text().catch(() => "")).slice(0, 300),
+      });
+      return false;
+    }
+    logger.info("markMessageAsRead: сообщения отмечены прочитанными", { count: readMessages.length });
+    return true;
+  } catch (err) {
+    logger.warn("markMessageAsRead: не удалось отметить прочитанным — идём дальше", {
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return false;
   }
 }
 

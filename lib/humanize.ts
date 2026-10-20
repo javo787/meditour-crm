@@ -82,6 +82,70 @@ export function capBubbles(bubbles: string[]): string[] {
   return [...head, bubbles.slice(MAX_BUBBLES - 1).join("\n")];
 }
 
+// Предложения: после . ! ? … и пробела (или перевода строки). «руб. 500»
+// иногда разрежется лишний раз — не страшно, срабатывает только на
+// пузырях длиннее BUBBLE_SOFT_MAX.
+const SENTENCE_BOUNDARY = /(?<=[.!?…])\s+|\n+/u;
+
+function packSentences(text: string, max: number): string[] {
+  const chunks: string[] = [];
+  for (const sentence of text.split(SENTENCE_BOUNDARY).map((x) => x.trim()).filter(Boolean)) {
+    const last = chunks[chunks.length - 1];
+    if (last !== undefined && last.length + 1 + sentence.length <= max) {
+      chunks[chunks.length - 1] = `${last} ${sentence}`;
+    } else {
+      chunks.push(sentence);
+    }
+  }
+  return chunks;
+}
+
+// Страховка от «стены текста». В реальных переписках до правок медиана ответа
+// была ~205 символов, а пятая часть — длиннее 300: промпт просит ≤150, но
+// модель его не всегда слушается. Длинный пузырь режем по границам
+// предложений на 2+ сообщения (они уходят с паузами, см. interBubblePauseMs) —
+// без единого лишнего токена. Предложение длиннее лимита не рубим посреди
+// фразы; больше MAX_BUBBLES сообщений не делаем — тогда пузырь остаётся как есть.
+export function splitLongBubbles(bubbles: string[], max: number = BUBBLE_SOFT_MAX): string[] {
+  let total = bubbles.length;
+  const out: string[] = [];
+  for (const bubble of bubbles) {
+    if (bubble.length <= max) {
+      out.push(bubble);
+      continue;
+    }
+    const parts = packSentences(bubble, max);
+    if (parts.length > 1 && total - 1 + parts.length <= MAX_BUBBLES) {
+      out.push(...parts);
+      total += parts.length - 1;
+    } else {
+      out.push(bubble);
+    }
+  }
+  return out;
+}
+
+// До правок «!» был почти в каждом втором ответе бота (46,6% пузырей), хотя
+// промпт просил «восклицательные знаки — редко»: мягкое правило модель не
+// держит. Жёстко: на весь ответ — не больше одного «!» (первый остаётся,
+// чтобы приветствие не звучало сухо), остальные становятся точками; «!!!» и
+// «?!» схлопываются.
+export function limitExclamations(bubbles: string[]): string[] {
+  let used = false;
+  return bubbles.map((bubble) =>
+    bubble.replace(/\?*!+/g, (run) => {
+      const first = !used;
+      used = true;
+      if (run.includes("?")) return "?";
+      return first ? "!" : ".";
+    })
+  );
+}
+
+function polishBubbles(bubbles: string[]): string[] {
+  return limitExclamations(splitLongBubbles(bubbles));
+}
+
 export function parseModelReply(raw: string): ParsedReply {
   const cleaned = stripCodeFences(raw);
 
@@ -101,7 +165,7 @@ export function parseModelReply(raw: string): ParsedReply {
         .filter(Boolean);
       return {
         language: parsed.data.language,
-        messages: capBubbles(messages),
+        messages: polishBubbles(capBubbles(messages)),
         handoff: parsed.data.handoff ?? false,
         structured: true,
       };
@@ -111,7 +175,7 @@ export function parseModelReply(raw: string): ParsedReply {
   // Не JSON (например, запрос со схемой не прошёл и шлюз ответил обычным
   // текстом) — не теряем ответ, просто режем по строкам.
   return {
-    messages: splitIntoBubbles(sanitizeBubble(raw)),
+    messages: polishBubbles(splitIntoBubbles(sanitizeBubble(raw))),
     handoff: false,
     structured: false,
   };
@@ -217,4 +281,49 @@ export function typingDelayMs(text: string, rand: () => number = Math.random): n
   const raw = TYPING_BASE_MS + text.length * TYPING_PER_CHAR_MS;
   const jitter = 0.8 + rand() * 0.4;
   return Math.round(Math.min(TYPING_MAX_MS, Math.max(TYPING_MIN_MS, raw * jitter)));
+}
+
+const READ_GAP_MIN_MS = 700;
+const READ_GAP_MAX_MS = 1800;
+
+// Пауза МЕЖДУ пузырями одного ответа, которую выдерживаем сами.
+// Параметр delay в Evolution API не гарантирует, что HTTP-запрос дождётся
+// конца «печатает…»: на части версий шлюз отвечает сразу (или игнорирует
+// delay), и тогда цикл отправки выстреливал все пузыри подряд — пациент
+// получал «стену» сообщений одновременно. Поэтому после каждой отправки
+// досыпаем недостающее до времени набора (typingMs минус то, что запрос уже
+// занял — если шлюз сам честно ждал, досыпать почти нечего) и добавляем
+// короткую паузу «прочитал, подумал» перед следующим пузырём.
+export function interBubblePauseMs(
+  typingMs: number,
+  elapsedMs: number,
+  rand: () => number = Math.random
+): number {
+  const remainingTyping = Math.max(0, typingMs - Math.max(0, elapsedMs));
+  const readGap = READ_GAP_MIN_MS + rand() * (READ_GAP_MAX_MS - READ_GAP_MIN_MS);
+  return Math.round(remainingTyping + readGap);
+}
+
+const READ_DELAY_MIN_MS = 400;
+const READ_DELAY_MAX_MS = 1200;
+
+// Пауза между «прочитано» (синие галочки) и началом «печатает…»: человек
+// сначала открывает чат, и только потом начинает писать. Небольшая — основное
+// время ожидания пациента уже съели Gemini и сам набор текста.
+export function readDelayMs(rand: () => number = Math.random): number {
+  return Math.round(READ_DELAY_MIN_MS + rand() * (READ_DELAY_MAX_MS - READ_DELAY_MIN_MS));
+}
+
+// ---------------------------------------------------------------------------
+// 4) Арабская графика
+// ---------------------------------------------------------------------------
+
+// Основной блок + Supplement + Extended-A + Presentation Forms A/B. Таджикский
+// пишется кириллицей, узбекский — латиницей, русский — кириллицей: арабские
+// и персидские буквы в ответе бота — всегда сбой модели (она иногда «уходит»
+// в персидскую графику на таджикском), и пациенту такое показывать нельзя.
+const ARABIC_SCRIPT_RE = /[؀-ۿݐ-ݿࢠ-ࣿﭐ-﷿ﹰ-﻿]/;
+
+export function containsArabicScript(text: string): boolean {
+  return ARABIC_SCRIPT_RE.test(text);
 }

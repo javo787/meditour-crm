@@ -112,7 +112,7 @@ interface ReplyResponse {
   messages: string[];
   handoff: boolean;
   language: SimLanguage | null;
-  suppressed: "empty" | "duplicate" | null;
+  suppressed: "empty" | "duplicate" | "arabic-script" | null;
   latencyMs: number;
   error?: string;
 }
@@ -234,6 +234,8 @@ export function Simulator() {
         note(
           data.suppressed === "duplicate"
             ? "ИИ мог только повторить уже сказанное — ответ не отправлен. В боевом режиме диалог ушёл бы координатору."
+            : data.suppressed === "arabic-script"
+            ? "Ответ ИИ получился с арабскими буквами — не отправлен. В боевом режиме диалог ушёл бы координатору."
             : "ИИ не сформировал ответ. В боевом режиме диалог ушёл бы координатору.",
           "warn"
         );

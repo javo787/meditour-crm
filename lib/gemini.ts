@@ -11,7 +11,14 @@ import {
   type SimLanguage,
   type SimTurn,
 } from "@/lib/simulator";
-import { dropDuplicateBubbles, parseModelReply, type DialogLanguage } from "@/lib/humanize";
+import {
+  containsArabicScript,
+  dropDuplicateBubbles,
+  parseModelReply,
+  type DialogLanguage,
+} from "@/lib/humanize";
+import { callInviteHint } from "@/lib/call-window";
+import { returnGapHint } from "@/lib/return-gap";
 
 const log = createLogger("gemini");
 
@@ -59,6 +66,16 @@ function roleFor(from: ChatMessage["from"]): "user" | "model" {
   return from === "ai" ? "model" : "user";
 }
 
+// Сообщение координатора (живого человека, который пишет пациенту с телефона
+// или из CRM) раньше уходило в модель как реплика пациента: «Позвоним завтра
+// в 12:00» читалось как слова самого пациента. Теперь это служебная пометка в
+// ходе «user» — не от лица пациента и не от лица модели (в её ходах пометок
+// нет, поэтому копировать формат ей не с чего).
+function historyText(m: ChatMessage): string {
+  if (m.from !== "coordinator") return m.text;
+  return `(Служебная пометка, не реплика пациента: координатор Meditur — живой человек — сам написал пациенту: «${m.text}»)`;
+}
+
 // Формат ответа WhatsApp-бота — structured output (JSON по схеме), а не
 // свободный текст + function calling. Почему так:
 //  • messages — это и есть WhatsApp-пузыри: модель сама решает, где одна
@@ -81,15 +98,15 @@ const REPLY_RESPONSE_SCHEMA = {
       format: "enum",
       enum: ["tg", "ru", "uz"],
       description:
-        "Language of THIS reply, judged from the patient's latest coherent sentences (not isolated loanwords such as diagnoses or exam names): tg = Tajik, ru = Russian, uz = Uzbek. The very first reply to a new patient is always tg.",
+        "Language of THIS reply, judged from the patient's latest coherent sentences (not isolated loanwords such as diagnoses or exam names): tg = Tajik, ru = Russian, uz = Uzbek. The very first reply to a new patient is always tg. Script: tg and ru are written in Cyrillic, uz in Latin - never in Arabic or Persian script, even if the patient writes in it.",
     },
     messages: {
       type: "ARRAY",
       minItems: 1,
-      maxItems: 4,
+      maxItems: 3,
       items: { type: "STRING" },
       description:
-        "The reply as 1-3 separate WhatsApp messages in the order they are sent. Each message is one short thought, written like a person typing in a chat: no lists, no markdown, no headers, no line breaks inside a message. Never repeat a thought, greeting, self-introduction or thank-you that already appears earlier in the conversation. Always at least one message, even when handoff is true.",
+        "The reply as 1-3 separate WhatsApp messages in the order they are sent. Each message is one short thought of at most ~150 characters (1-2 short sentences), written like a person typing in a chat: no filler, no lists, no markdown, no headers, no line breaks inside a message. Never repeat a thought, greeting, self-introduction or thank-you that already appears earlier in the conversation. Always at least one message, even when handoff is true.",
     },
     handoff: {
       type: "BOOLEAN",
@@ -114,10 +131,18 @@ const NUDGE_EMPTY =
 const NUDGE_DUPLICATE =
   "(Служебная подсказка, пациент её не видит.) Всё, что ты собирался написать, ты уже говорил пациенту раньше в этом диалоге. Не повторяй ни одну прежнюю мысль, приветствие, представление или благодарность. Напиши только то, что действительно ново и относится к его последнему сообщению. Если нового сказать нечего — одним коротким сообщением задай один конкретный уточняющий вопрос по его последнему сообщению.";
 
-function withNudge(contents: any[], nudge: string): any[] {
+const NUDGE_ARABIC =
+  "(Служебная подсказка, пациент её не видит.) В прошлом варианте ответа были арабские или персидские буквы — такое отправлять нельзя. Перепиши ответ целиком, строго: таджикский — только кириллицей, русский — кириллицей, узбекский — латиницей. Ни одной арабской или персидской буквы, даже если пациент пишет ими.";
+
+// Максимум повторных запросов, если в ответе арабская графика. Дальше —
+// предохранитель в конце askGemini: такие пузыри просто не отправляются.
+const MAX_SCRIPT_RETRIES = 2;
+
+function withNudge(contents: any[], nudges: string | string[]): any[] {
   const copy = contents.slice();
   const last = copy[copy.length - 1];
-  copy[copy.length - 1] = { ...last, parts: [...last.parts, { text: nudge }] };
+  const extra = (Array.isArray(nudges) ? nudges : [nudges]).map((text) => ({ text }));
+  copy[copy.length - 1] = { ...last, parts: [...last.parts, ...extra] };
   return copy;
 }
 
@@ -221,13 +246,24 @@ async function getOrCreatePlaybookCache(logger: any): Promise<string | null> {
 // systemInstruction (и опционально свои tools), но сетевые ретраи и парсинг
 // ответа одинаковые. Возвращает и text, и functionCall (если модель его
 // вызвала) — при пустом тексте НЕ подставляет запасную фразу, это решает
-// вызывающая сторона.
-async function generateWithFallback(
+// вызывающая сторона. В результате также `model` — модель, давшая ответ.
+//
+// keepGenerationConfig (раздел «Планы»): ответ обязан быть JSON, поэтому запрос без
+// generationConfig не отправляется никогда. Если API отклонил запрос со схемой (HTTP 400,
+// например как слишком сложной), та же модель получает один повтор без responseSchema, но с
+// responseMimeType, temperature и maxOutputTokens, без tools и без кэша. При 429/5xx и сетевых
+// ошибках схема не снимается: работает обычный перебор моделей и циклов. Без флага поведение прежнее.
+export async function generateWithFallback(
   contents: any[],
   systemInstruction: string,
   logger: any,
-  options?: { tools?: GeminiTools; cacheable?: boolean; generationConfig?: Record<string, unknown> }
-): Promise<{ text: string; functionCall?: GeminiFunctionCall }> {
+  options?: {
+    tools?: GeminiTools;
+    cacheable?: boolean;
+    generationConfig?: Record<string, unknown>;
+    keepGenerationConfig?: boolean;
+  }
+): Promise<{ text: string; functionCall?: GeminiFunctionCall; model: string }> {
   if (!API_KEY) {
     logger.error("GEMINI_API_KEY не задан");
     throw new Error("GEMINI_API_KEY не задан — добавьте его в .env.local");
@@ -238,6 +274,7 @@ async function generateWithFallback(
   let lastStatus = 0;
   let lastBody = "";
   let res: Response | undefined;
+  let answeredBy = "";
 
   for (let cycle = 1; cycle <= MAX_CYCLES; cycle++) {
     for (const model of MODELS) {
@@ -280,7 +317,17 @@ async function generateWithFallback(
       // ответ пациентам), пробуем без них. Потерять на этом ответе
       // handoff/разбивку на пузыри — не страшно (parseModelReply разберёт
       // обычный текст), а вот отвечать пациенту вообще нечем — критично.
-      if (!result.ok && (options?.tools || options?.generationConfig)) {
+      if (options?.keepGenerationConfig) {
+        // Только 400 и только если в конфиге есть схема: остальные ошибки идут обычным перебором.
+        if (!result.ok && result.status === 400 && options.generationConfig && "responseSchema" in options.generationConfig) {
+          logger.warn("Gemini: схема ответа отклонена (400), та же модель повторяет запрос в режиме JSON без схемы", {
+            model,
+          });
+          const withoutSchema = { ...options.generationConfig };
+          delete withoutSchema.responseSchema;
+          result = await callModel(model, contents, systemInstruction, undefined, undefined, logger, withoutSchema);
+        }
+      } else if (!result.ok && (options?.tools || options?.generationConfig)) {
         logger.warn("Gemini: запрос с tools/схемой ответа не удался, пробуем без них", {
           model,
           status: result.status,
@@ -290,6 +337,7 @@ async function generateWithFallback(
 
       if (result.ok) {
         res = result.res;
+        answeredBy = model;
         break;
       }
 
@@ -340,6 +388,7 @@ async function generateWithFallback(
   const functionCall = parts.find((p) => p.functionCall)?.functionCall;
 
   logger.info("Gemini: ответ получен", {
+    model: answeredBy,
     status: res.status,
     finishReason,
     blockReason,
@@ -352,7 +401,7 @@ async function generateWithFallback(
     logger.warn("Gemini: пустой ответ от модели", { finishReason, blockReason });
   }
 
-  return { text, functionCall };
+  return { text, functionCall, model: answeredBy };
 }
 
 export async function askGemini(params: {
@@ -363,19 +412,22 @@ export async function askGemini(params: {
     audio?: { base64: string; mimeType: string };
   }>;
   requestId?: string;
+  // Момент обращения пациента — от него зависит, зовём ли мы на звонок
+  // (lib/call-window.ts). По умолчанию «сейчас»; параметр нужен тестам.
+  now?: Date;
 }): Promise<{
   // Готовые к отправке WhatsApp-сообщения (пузыри) по порядку. Пусто только
   // если suppressed задан — тогда отправлять нечего и решает координатор.
   messages: string[];
   handoff: boolean;
   language?: DialogLanguage;
-  suppressed?: "empty" | "duplicate";
+  suppressed?: "empty" | "duplicate" | "arabic-script";
 }> {
   const logger = params.requestId ? log.child(params.requestId) : log;
 
   const contents = params.history.map((m) => ({
     role: roleFor(m.from),
-    parts: [{ text: m.text }] as GeminiPart[],
+    parts: [{ text: historyText(m) }] as GeminiPart[],
   }));
 
   const newParts: GeminiPart[] = [];
@@ -410,6 +462,14 @@ export async function askGemini(params: {
 
   contents.push({ role: "user", parts: newParts });
 
+  // В рабочее окно (12:00–17:00) — короткая подсказка «позови на звонок».
+  // Дописывается к последнему сообщению пациента, а не в системный промпт,
+  // чтобы не ломать его explicit-кэш (подробности — в lib/call-window.ts).
+  const now = params.now ?? new Date();
+  const windowHint = callInviteHint(now);
+  // Пациент вернулся после паузы (больше суток с последнего сообщения).
+  const returnHint = returnGapHint(params.history[params.history.length - 1]?.at, now);
+
   logger.info("askGemini: отправка запроса", {
     models: MODELS,
     historyMessages: params.history.length,
@@ -417,6 +477,8 @@ export async function askGemini(params: {
     imageCount,
     audioCount,
     totalTextLength,
+    callInviteHint: Boolean(windowHint),
+    returnHint: Boolean(returnHint),
   });
 
   // Что пациент уже слышал от нас — для защиты от повторов. Системные
@@ -424,8 +486,9 @@ export async function askGemini(params: {
   const recentAiTexts = params.history.filter((m) => m.from === "ai").map((m) => m.text);
 
   const generate = async (nudge?: string) => {
+    const hints = [returnHint, windowHint, nudge].filter((h): h is string => Boolean(h));
     const { text } = await generateWithFallback(
-      nudge ? withNudge(contents, nudge) : contents,
+      hints.length > 0 ? withNudge(contents, hints) : contents,
       MEDITUR_SYSTEM_PROMPT,
       logger,
       { cacheable: true, generationConfig: REPLY_GENERATION_CONFIG }
@@ -435,6 +498,20 @@ export async function askGemini(params: {
 
   let reply = await generate();
   let handoff = reply.handoff;
+
+  // (0) Арабская графика. Таджикский пишется кириллицей, но модель иногда
+  // уходит в персидскую графику — такой ответ возвращаем на переписывание
+  // (до MAX_SCRIPT_RETRIES раз). Если и после этого не вышло — финальный
+  // предохранитель ниже всё равно не даст ему уйти пациенту.
+  for (
+    let attempt = 1;
+    attempt <= MAX_SCRIPT_RETRIES && reply.messages.some(containsArabicScript);
+    attempt++
+  ) {
+    logger.warn("askGemini: в ответе арабская графика — просим переписать", { attempt });
+    reply = await generate(NUDGE_ARABIC);
+    handoff = handoff || reply.handoff;
+  }
 
   // (а) Модель не вернула ни одного сообщения (блок безопасности,
   // MAX_TOKENS, пустой JSON). Раньше здесь подставлялась одна жёсткая
@@ -465,12 +542,32 @@ export async function askGemini(params: {
   if (dropped.length > 0) {
     logger.info("askGemini: отброшены повторяющиеся пузыри", { dropped: dropped.length, kept: kept.length });
   }
+
+  // Финальный предохранитель: что бы ни вернули повторные запросы выше
+  // (в том числе подсказки про пустой ответ и дубль), арабская графика
+  // пациенту не уходит. Лучше не отправить пузырь, чем показать такой.
+  const cleanKept = kept.filter((b) => !containsArabicScript(b));
+  const arabicDropped = kept.length - cleanKept.length;
+  if (arabicDropped > 0) {
+    logger.warn("askGemini: арабская графика осталась после повторов — пузыри не отправляются", {
+      dropped: arabicDropped,
+      kept: cleanKept.length,
+    });
+    kept = cleanKept;
+  }
+
   if (handoff) {
     logger.info("askGemini: модель запросила передачу координатору (handoff) — диалог будет поставлен на паузу");
   }
 
-  const suppressed: "empty" | "duplicate" | undefined =
-    kept.length > 0 ? undefined : produced === 0 ? "empty" : "duplicate";
+  const suppressed: "empty" | "duplicate" | "arabic-script" | undefined =
+    kept.length > 0
+      ? undefined
+      : arabicDropped > 0
+      ? "arabic-script"
+      : produced === 0
+      ? "empty"
+      : "duplicate";
   if (suppressed) {
     logger.warn("askGemini: отправлять нечего — ответ подавлен", { suppressed, handoff });
   }

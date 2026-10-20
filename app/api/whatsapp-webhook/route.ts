@@ -15,15 +15,17 @@ import {
   updateLead,
 } from "@/lib/db";
 import { MAX_DOCUMENT_BYTES, resolveMimeType } from "@/lib/documents";
-import { fetchMediaBase64, sendWhatsAppText } from "@/lib/evolution";
+import { fetchMediaBase64, markWhatsAppMessagesRead, sendWhatsAppText, type ReadKey } from "@/lib/evolution";
 import { askGemini } from "@/lib/gemini";
-import { typingDelayMs } from "@/lib/humanize";
+import { interBubblePauseMs, readDelayMs, typingDelayMs } from "@/lib/humanize";
 import { createLogger, newRequestId, Logger } from "@/lib/logger";
 import { resolveWhatsAppJid } from "@/lib/whatsapp-jid";
 
 export const dynamic = "force-dynamic";
 
 const baseLog = createLogger("webhook");
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 // Buffer for grouping incoming messages by leadId
 const BATCH_DEBOUNCE_MS = 8000;
@@ -34,6 +36,9 @@ const pendingBatches = new Map<string, {
     text: string;
     image?: { base64: string; mimeType: string };
     audio?: { base64: string; mimeType: string };
+    // Ключ входящего сообщения WhatsApp — чтобы отметить его прочитанным
+    // прямо перед ответом (см. markWhatsAppMessagesRead).
+    readKey?: ReadKey;
   }>;
   timer: NodeJS.Timeout;
 }>();
@@ -497,7 +502,13 @@ async function processNewMessage(
     pendingBatches.set(lead.id, batch);
   }
 
-  batch.items.push({ text, image, audio });
+  const incomingKey = data.key;
+  batch.items.push({
+    text,
+    image,
+    audio,
+    readKey: incomingKey?.id && incomingKey.remoteJid ? { id: incomingKey.id, remoteJid: incomingKey.remoteJid } : undefined,
+  });
   batch.timer = setTimeout(() => processBatch(lead.id, phone), BATCH_DEBOUNCE_MS);
 
   log.info("11. сообщение добавлено в буфер, таймер обновлен", { leadId: lead.id, itemsCount: batch.items.length });
@@ -604,7 +615,7 @@ async function processBatchInner(leadId: string, phone: string, log: Logger, req
   // переписке, а не гадать, почему бот молчит.
   let replyMessages: string[];
   let shouldPause: boolean;
-  let suppressed: "empty" | "duplicate" | undefined;
+  let suppressed: "empty" | "duplicate" | "arabic-script" | undefined;
   try {
     // Пометки и недоставленные ответы в контекст не берём: пациент их не
     // видел, а модель иначе будет считать, что уже это сказала.
@@ -651,6 +662,8 @@ async function processBatchInner(leadId: string, phone: string, log: Logger, req
         ? "— ИИ автоматически поставлен на паузу —"
         : suppressed === "duplicate"
         ? "— ИИ мог только повторить уже сказанное. ИИ поставлен на паузу — ответьте вручную —"
+        : suppressed === "arabic-script"
+        ? "— Ответ ИИ получился с арабскими буквами и не отправлен. ИИ поставлен на паузу — ответьте вручную —"
         : "— ИИ не сформировал ответ. ИИ поставлен на паузу — ответьте вручную —",
       log
     );
@@ -672,6 +685,16 @@ async function processBatchInner(leadId: string, phone: string, log: Logger, req
   // или адресации, а не случайный сбой) и явная пометка для координатора.
   let delivered = 0;
   let interrupted = false;
+
+  // «Прочитано» → короткая пауза → «печатает…» → текст: так отвечает человек.
+  // Отмечаем только теперь, когда ответ точно будет отправлен: если бот
+  // промолчал или сломался, чат остаётся непрочитанным на телефоне
+  // координатора. Сбой тут не мешает ответу (функция не бросает ошибок).
+  const readKeys = items.flatMap((item) => (item.readKey ? [item.readKey] : []));
+  if (await markWhatsAppMessagesRead(readKeys, requestId)) {
+    await sleep(readDelayMs());
+  }
+
   for (let i = 0; i < replyMessages.length; i++) {
     const bubble = replyMessages[i];
 
@@ -701,8 +724,18 @@ async function processBatchInner(leadId: string, phone: string, log: Logger, req
 
     const saved = await addMessage(leadId, "ai", bubble);
     try {
-      await sendWhatsAppText(phone, bubble, requestId, { typingDelayMs: typingDelayMs(bubble) });
+      const typingMs = typingDelayMs(bubble);
+      const sendStartedAt = Date.now();
+      await sendWhatsAppText(phone, bubble, requestId, { typingDelayMs: typingMs });
       delivered++;
+
+      // Пауза до следующего пузыря — на нашей стороне, а не на совести шлюза
+      // (см. interBubblePauseMs): иначе все пузыри уходят одновременно.
+      if (i < replyMessages.length - 1) {
+        const pauseMs = interBubblePauseMs(typingMs, Date.now() - sendStartedAt);
+        log.info("processBatch: пауза перед следующим сообщением", { leadId, bubbleIndex: i, pauseMs });
+        await sleep(pauseMs);
+      }
     } catch (err) {
       log.error("processBatch: не удалось отправить ответ пациенту через Evolution API", {
         leadId,

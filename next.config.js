@@ -1,7 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // pdfmake читает шрифты с диска и не должен собираться webpack-ом.
-  experimental: { serverComponentsExternalPackages: ["pdfmake"] },
+  // pdfmake читает шрифты с диска, mammoth разбирает .docx: оба не должны собираться webpack-ом.
+  experimental: { serverComponentsExternalPackages: ["pdfmake", "mammoth"] },
   async headers() {
     return [
       {

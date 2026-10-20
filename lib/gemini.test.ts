@@ -129,3 +129,254 @@ describe("askGemini (structured output)", () => {
     expect(r.suppressed).toBeUndefined();
   });
 });
+
+// 13:00 и 19:00 по Душанбе (UTC+5) — внутри и вне окна 12:00–17:00.
+const IN_WINDOW = new Date("2026-10-15T08:00:00Z");
+const OUT_OF_WINDOW = new Date("2026-10-15T14:00:00Z");
+const lastTurnTexts = (call: FetchCall): string[] =>
+  call.body.contents.at(-1).parts.map((p: any) => p.text ?? "");
+
+describe("askGemini: арабская графика", () => {
+  it("ответ с арабскими буквами возвращается на переписывание, уходит чистый вариант", async () => {
+    const calls = mockGemini([
+      { text: json(["سلام، ممنون"], false, "tg") },
+      { text: json(["Салом, ташаккур"], false, "tg") },
+    ]);
+    const { askGemini } = await load();
+
+    const r = await askGemini({ history: [], items, now: OUT_OF_WINDOW });
+
+    expect(r.messages).toEqual(["Салом, ташаккур"]);
+    expect(r.suppressed).toBeUndefined();
+    expect(calls).toHaveLength(2);
+    expect(lastTurnTexts(calls[1]).at(-1)).toContain("арабск");
+    // подсказка — только в запросе, в историю диалога не попадает
+    expect(calls[1].body.contents).toHaveLength(calls[0].body.contents.length);
+  });
+
+  it("арабская графика не ушла после повторов: пузырь не отправляется, диалог — координатору", async () => {
+    const calls = mockGemini([{ text: json(["سلام"], false, "tg") }]);
+    const { askGemini } = await load();
+
+    const r = await askGemini({ history: [], items, now: OUT_OF_WINDOW });
+
+    expect(calls).toHaveLength(3); // исходный запрос + 2 повтора
+    expect(r.messages).toEqual([]);
+    expect(r.suppressed).toBe("arabic-script");
+  });
+
+  it("частично арабский ответ: чистые пузыри уходят, с арабскими буквами — нет", async () => {
+    mockGemini([{ text: json(["Салом", "سلام"], false, "tg") }]);
+    const { askGemini } = await load();
+
+    const r = await askGemini({ history: [], items, now: OUT_OF_WINDOW });
+
+    expect(r.messages).toEqual(["Салом"]);
+    expect(r.suppressed).toBeUndefined();
+  });
+
+  it("handoff из отклонённого ответа не теряется", async () => {
+    mockGemini([
+      { text: json(["سلام"], true, "tg") },
+      { text: json(["Салом, ташаккур"], false, "tg") },
+    ]);
+    const { askGemini } = await load();
+
+    const r = await askGemini({ history: [], items, now: OUT_OF_WINDOW });
+
+    expect(r.messages).toEqual(["Салом, ташаккур"]);
+    expect(r.handoff).toBe(true);
+  });
+});
+
+describe("askGemini: приглашение на звонок в рабочее окно", () => {
+  it("в окне 12:00–17:00 подсказка дописывается к последнему сообщению пациента, а не в системный промпт", async () => {
+    const inCalls = mockGemini([{ text: json(["Салом! Чӣ тавр кӯмак карда метавонам?"], false, "tg") }]);
+    const { askGemini } = await load();
+    await askGemini({ history: [], items, now: IN_WINDOW });
+
+    const outCalls = mockGemini([{ text: json(["Салом! Чӣ тавр кӯмак карда метавонам?"], false, "tg") }]);
+    await askGemini({ history: [], items, now: OUT_OF_WINDOW });
+
+    const inTexts = lastTurnTexts(inCalls[0]);
+    expect(inTexts[0]).toBe(items[0].text);
+    expect(inTexts.at(-1)).toContain("Служебная подсказка");
+    expect(inTexts.at(-1)).toContain("созвониться");
+
+    const outTexts = lastTurnTexts(outCalls[0]);
+    expect(outTexts).toEqual([items[0].text]);
+
+    // системный промпт одинаков в обоих случаях — его кэш подсказка не ломает
+    expect(inCalls[0].body.systemInstruction).toEqual(outCalls[0].body.systemInstruction);
+  });
+
+  it("подсказка про звонок и служебная подсказка повтора идут вместе, порядок сохранён", async () => {
+    const said = "Спасибо, документы получил. Передам индийским врачам и напишу вам, как только будет ответ.";
+    const calls = mockGemini([{ text: json([said]) }, { text: json(["Уточните, пожалуйста, возраст пациента?"]) }]);
+    const { askGemini } = await load();
+
+    const r = await askGemini({ history: [aiMsg(said)], items, now: IN_WINDOW });
+
+    expect(r.messages).toEqual(["Уточните, пожалуйста, возраст пациента?"]);
+    const retryTexts = lastTurnTexts(calls[1]);
+    expect(retryTexts.some((t) => t.includes("созвониться"))).toBe(true);
+    expect(retryTexts.at(-1)).toContain("Не повторяй ни одну прежнюю мысль");
+  });
+});
+
+// Контекст переписки: кто что сказал и сколько прошло времени.
+const NOW_CTX = new Date("2026-10-16T14:00:00Z"); // 19:00 по Душанбе — вне окна звонков
+const msgAt = (from: "patient" | "ai" | "coordinator", text: string, at: string) => ({
+  id: text,
+  leadId: "l",
+  from,
+  text,
+  at,
+});
+
+describe("askGemini: контекст переписки", () => {
+  it("сообщение координатора — служебная пометка, а не реплика пациента", async () => {
+    const calls = mockGemini([{ text: json(["Хорошо."]) }]);
+    const { askGemini } = await load();
+    await askGemini({
+      history: [
+        msgAt("patient", "Салом", "2026-10-16T10:00:00Z"),
+        msgAt("coordinator", "Позвоним вам завтра в 12:00", "2026-10-16T11:00:00Z"),
+        msgAt("ai", "Хорошо, жду.", "2026-10-16T11:05:00Z"),
+      ],
+      items,
+      now: NOW_CTX,
+    });
+
+    const turns = calls[0].body.contents;
+    expect(turns[0]).toEqual({ role: "user", parts: [{ text: "Салом" }] });
+    expect(turns[1].role).toBe("user");
+    expect(turns[1].parts[0].text).toContain("Позвоним вам завтра в 12:00");
+    expect(turns[1].parts[0].text).toContain("координатор");
+    expect(turns[1].parts[0].text).toContain("не реплика пациента");
+    expect(turns[2]).toEqual({ role: "model", parts: [{ text: "Хорошо, жду." }] });
+  });
+
+  it("пациент вернулся через 2 недели: подсказка с числом дней дописана к его сообщению, системный промпт тот же", async () => {
+    const backCalls = mockGemini([{ text: json(["Салом."]) }]);
+    const { askGemini } = await load();
+    await askGemini({
+      history: [msgAt("ai", "Жду документы.", "2026-10-02T10:00:00Z")],
+      items,
+      now: NOW_CTX,
+    });
+
+    const freshCalls = mockGemini([{ text: json(["Салом."]) }]);
+    await askGemini({
+      history: [msgAt("ai", "Жду документы.", "2026-10-16T13:00:00Z")],
+      items,
+      now: NOW_CTX,
+    });
+
+    const back = lastTurnTexts(backCalls[0]);
+    expect(back[0]).toBe(items[0].text);
+    expect(back.at(-1)).toContain("Служебная подсказка");
+    expect(back.at(-1)).toContain("14 дней");
+    expect(lastTurnTexts(freshCalls[0])).toEqual([items[0].text]);
+    expect(backCalls[0].body.systemInstruction).toEqual(freshCalls[0].body.systemInstruction);
+  });
+
+  it("первое сообщение в диалоге — подсказки о паузе нет", async () => {
+    const calls = mockGemini([{ text: json(["Салом."]) }]);
+    const { askGemini } = await load();
+    await askGemini({ history: [], items, now: NOW_CTX });
+    expect(lastTurnTexts(calls[0])).toEqual([items[0].text]);
+  });
+
+  it("возврат после паузы в рабочее окно: обе подсказки на месте, подсказка про паузу первой", async () => {
+    const calls = mockGemini([{ text: json(["Салом."]) }]);
+    const { askGemini } = await load();
+    await askGemini({
+      history: [msgAt("ai", "Жду документы.", "2026-10-02T10:00:00Z")],
+      items,
+      now: IN_WINDOW,
+    });
+    const texts = lastTurnTexts(calls[0]);
+    expect(texts).toHaveLength(3);
+    expect(texts[1]).toContain("после паузы");
+    expect(texts[2]).toContain("созвониться");
+  });
+});
+
+
+// Режим keepGenerationConfig (раздел «Планы»): ответ обязан быть JSON, поэтому запрос без generationConfig
+// не отправляется никогда; схему снимает только 400, и только на той же модели.
+describe("generateWithFallback: keepGenerationConfig", () => {
+  const cfg = {
+    temperature: 0.2,
+    responseMimeType: "application/json",
+    responseSchema: { type: "OBJECT", properties: {} },
+    maxOutputTokens: 16000,
+  };
+  const contents = [{ role: "user", parts: [{ text: "x" }] }];
+  const stubLogger = () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn() });
+  const call = async (replies: Parameters<typeof mockGemini>[0]) => {
+    const calls = mockGemini(replies);
+    const { generateWithFallback } = await load();
+    const result = await generateWithFallback(contents, "sys", stubLogger(), {
+      generationConfig: cfg,
+      keepGenerationConfig: true,
+    });
+    return { calls, result };
+  };
+
+  it("a rejected schema (400) is retried on the same model as JSON mode without the schema, never as free text", async () => {
+    const { calls, result } = await call([{ ok: false, status: 400 }, { text: "{}" }]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].body.generationConfig.responseSchema).toBeDefined();
+    expect(calls[1].body.generationConfig).toEqual({
+      temperature: 0.2,
+      responseMimeType: "application/json",
+      maxOutputTokens: 16000,
+    });
+    expect(calls[1].body.tools).toBeUndefined();
+    expect(calls[1].url).toBe(calls[0].url);
+    expect(result.text).toBe("{}");
+  });
+
+  it("an overloaded model (503) moves to the next model with the schema intact", async () => {
+    const { calls, result } = await call([{ ok: false, status: 503 }, { text: "{}" }]);
+    expect(calls[1].body.generationConfig.responseSchema).toBeDefined();
+    expect(calls[1].url).not.toBe(calls[0].url);
+    expect(calls[1].url).toContain(result.model);
+  });
+
+  it("the model that answered is returned: the first one when it answers at once", async () => {
+    const { calls, result } = await call([{ text: "{}" }]);
+    expect(calls).toHaveLength(1);
+    expect(result.model).not.toBe("");
+    expect(calls[0].url).toContain(result.model);
+  });
+
+  it("a second 400 is final: it throws, and no request ever goes out without generationConfig", async () => {
+    const calls = mockGemini([{ ok: false, status: 400 }]);
+    const { generateWithFallback } = await load();
+    await expect(
+      generateWithFallback(contents, "sys", stubLogger(), { generationConfig: cfg, keepGenerationConfig: true }),
+    ).rejects.toThrow("400");
+    expect(calls).toHaveLength(2);
+    expect(calls.every((c) => c.body.generationConfig !== undefined)).toBe(true);
+  });
+
+  it("a 400 when the config has no schema to drop is final at once: one request, then the error", async () => {
+    const calls = mockGemini([{ ok: false, status: 400 }]);
+    const { generateWithFallback } = await load();
+    const noSchema = { temperature: 0.2, responseMimeType: "application/json", maxOutputTokens: 16000 };
+    await expect(
+      generateWithFallback(contents, "sys", stubLogger(), { generationConfig: noSchema, keepGenerationConfig: true }),
+    ).rejects.toThrow("400");
+    expect(calls).toHaveLength(1);
+  });
+
+  it("without the flag the old behaviour stays: a failed request is retried with no config at all", async () => {
+    const calls = mockGemini([{ ok: false, status: 400 }, { text: "ok" }]);
+    const { generateWithFallback } = await load();
+    await generateWithFallback(contents, "sys", stubLogger(), { generationConfig: cfg });
+    expect(calls[1].body.generationConfig).toBeUndefined();
+  });
+});
