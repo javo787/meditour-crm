@@ -1,8 +1,9 @@
-import { buildWarnings } from "@/lib/documents";
+import { buildWarnings, looksLikeRealName, transliterate } from "@/lib/documents";
 import {
   claimNextDocument,
   completeDocument,
   failDocument,
+  getDossierProfile,
   getLead,
   hasQueuedDocuments,
 } from "@/lib/db";
@@ -50,13 +51,19 @@ async function processOne(doc: NonNullable<Awaited<ReturnType<typeof claimNextDo
   const requestId = newRequestId();
   const logger = log.child(requestId);
   try {
+    // Имя пациента латиницей подсказывается модели: из профиля досье, а если
+    // его нет — из транслитерации имени лида (когда оно похоже на настоящее ФИО).
+    const [lead, profile] = await Promise.all([getLead(doc.leadId), getDossierProfile(doc.leadId)]);
+    const patientName =
+      profile.name?.trim() || (lead && looksLikeRealName(lead.name) ? transliterate(lead.name) : undefined);
+
     const extracted = await extractMedicalDocument({
       base64: doc.data.toString("base64"),
       mimeType: doc.mimeType,
+      patientName,
       requestId,
     });
-    const lead = await getLead(doc.leadId);
-    const warnings = buildWarnings({ extracted, leadName: lead?.name });
+    const warnings = buildWarnings({ extracted, leadName: lead?.name, profileName: profile.name });
     await completeDocument(doc.id, { ...extracted, warnings });
     logger.info("Документ разобран", {
       documentId: doc.id,

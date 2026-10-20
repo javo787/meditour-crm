@@ -2,7 +2,7 @@ import type { ChatMessage } from "@/lib/types";
 import { createLogger } from "@/lib/logger";
 import { MEDITUR_SYSTEM_PROMPT } from "@/lib/playbook";
 import { MEDICAL_OPINION_SYSTEM_PROMPT } from "@/lib/medical-opinion-prompt";
-import { DOCUMENT_EXTRACTION_PROMPT } from "@/lib/document-extraction-prompt";
+import { buildDocumentExtractionPrompt } from "@/lib/document-extraction-prompt";
 import { parseExtractionJson, type ExtractedDocument } from "@/lib/documents";
 import {
   buildPatientSystemPrompt,
@@ -660,6 +660,8 @@ export async function askCaseAssistant(params: {
 export async function extractMedicalDocument(params: {
   base64: string;
   mimeType: string;
+  /** Имя пациента латиницей — чтобы оно писалось одинаково во всех документах. */
+  patientName?: string;
   requestId?: string;
 }): Promise<ExtractedDocument> {
   const logger = params.requestId ? log.child(params.requestId) : log;
@@ -675,7 +677,7 @@ export async function extractMedicalDocument(params: {
 
   logger.info("extractMedicalDocument: отправка запроса", { models: MODELS, mimeType: params.mimeType });
 
-  const { text } = await generateWithFallback(contents, DOCUMENT_EXTRACTION_PROMPT, logger, {
+  const { text } = await generateWithFallback(contents, buildDocumentExtractionPrompt(params.patientName), logger, {
     generationConfig: { temperature: 0, responseMimeType: "application/json", maxOutputTokens: 16000 },
   });
   if (!text) {

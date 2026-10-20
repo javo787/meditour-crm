@@ -49,6 +49,31 @@ describe("prepareDossier", () => {
   });
 });
 
+describe("prepareDossier: pages and duplicates", () => {
+  it("merges pages into one section in page order", () => {
+    const data = prepareDossier([
+      doc({ id: "p1", title: "Complete blood count", docDate: "14 Aug 2026", translationEn: "Hemoglobin: 158 g/L", reviewed: true }),
+      doc({ id: "p2", mergedInto: "p1", pageNo: 2, title: "Complete Blood Count – lab report", translationEn: "Monocytes: 5 %", reviewed: false }),
+      doc({ id: "x", title: "Vitamin D", docDate: "14 Aug 2026", translationEn: "Vitamin D: 19.7 ng/ml" }),
+    ]);
+    expect(data.sections).toHaveLength(2);
+    const cbc = data.sections.find((s) => s.title === "Complete blood count");
+    expect(cbc?.text).toBe("Hemoglobin: 158 g/L\n\nMonocytes: 5 %");
+    // одна страница не проверена — раздел считается непроверенным
+    expect(data.unreviewed).toBeGreaterThanOrEqual(1);
+  });
+
+  it("reports duplicate sections by their numbers", () => {
+    const text =
+      "Frontal sinuses are pneumatized without mucosal thickening or fluid levels. The mucosa of the sphenoid sinuses is thickened on both sides. Nasal septum deviation to the right with a bony spur measuring 5 mm. No bone destructive changes.";
+    const data = prepareDossier([
+      doc({ title: "CT", docDate: "11 Aug 2026", translationEn: text, originalText: "" }),
+      doc({ title: "CT", docDate: "11 Aug 2026", translationEn: text.replace("pneumatized", "aerated"), originalText: "" }),
+    ]);
+    expect(data.duplicates).toEqual([[1, 2]]);
+  });
+});
+
 describe("buildDocumentsContext", () => {
   it("is empty when there is nothing translated", () => {
     expect(buildDocumentsContext([doc({ status: "pending" })])).toBe("");
@@ -66,6 +91,16 @@ describe("buildDocumentsContext", () => {
 });
 
 describe("buildDossierPdf", () => {
+  it("flows short documents onto shared pages instead of a page each", async () => {
+    const docs = Array.from({ length: 8 }, (_, i) =>
+      doc({ title: `Short report ${i + 1}`, docDate: `0${i + 1} Mar 2026`, translationEn: "Line one.\nLine two.\nLine three." })
+    );
+    const pdf = await buildDossierPdf({ name: "Test Patient" }, prepareDossier(docs));
+    const pages = (pdf.toString("latin1").match(/\/Type \/Page\b/g) ?? []).length;
+    // титул + оглавление на 1-й странице, затем 8 коротких документов помещаются на 1–2 страницы
+    expect(pages).toBeLessThanOrEqual(3);
+  });
+
   it("produces a real, small PDF with a page per document", async () => {
     const data = prepareDossier([
       doc({ title: "MRI of the hip joints – report", docDate: "12 Mar 2026", sourceLanguage: "ru", translationEn: "Findings: µ ≥ 5 mg/dL\n\nSecond paragraph.", uncertain: ["x"] }),

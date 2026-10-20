@@ -119,4 +119,19 @@ export interface PatientDocument {
   reviewed: boolean; // координатор проверил перевод
   include: boolean; // включать в PDF / контекст ассистента
   mediaMessageId?: string; // если файл взят из фото в переписке
+  handwritten?: boolean; // основной текст написан от руки — самый рискованный случай
+  patientDob?: string; // дата рождения, как прочитана на документе
+  patientGender?: "Male" | "Female";
+  // Многостраничный документ: страницы 2+ ссылаются на «главный» документ
+  // (первая страница) и в PDF сливаются с ним в один раздел.
+  mergedInto?: string;
+  pageNo?: number;
+}
+
+// Данные титульной страницы досье; хранятся на лиде и подсказываются модели
+// при разборе, чтобы имя во всех документах писалось одинаково.
+export interface DossierProfile {
+  name?: string;
+  dob?: string;
+  gender?: "Male" | "Female";
 }

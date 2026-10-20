@@ -66,6 +66,22 @@ describe("extractMedicalDocument", () => {
   });
 });
 
+describe("extraction prompt", () => {
+  it("carries the Latin patient name hint into the system prompt only when known", async () => {
+    const calls = mockGemini([{ text: REPORT_JSON }, { text: REPORT_JSON }]);
+    const { extractMedicalDocument } = await loadGemini();
+
+    await extractMedicalDocument({ base64: "AAAA", mimeType: "image/jpeg", patientName: "Bobojonov Mirali" });
+    await extractMedicalDocument({ base64: "AAAA", mimeType: "image/jpeg" });
+
+    expect(calls[0].systemInstruction.parts[0].text).toContain('"Bobojonov Mirali"');
+    expect(calls[1].systemInstruction.parts[0].text).not.toContain("PATIENT NAME");
+    // правила про таблицы, бланки и рукописный текст на месте
+    expect(calls[1].systemInstruction.parts[0].text).toContain("row by row");
+    expect(calls[1].systemInstruction.parts[0].text).toContain("pre-printed text");
+  });
+});
+
 describe("document queue", () => {
   const doc = (id: string, attempts = 1) => ({
     id,
@@ -85,6 +101,7 @@ describe("document queue", () => {
       completeDocument,
       failDocument,
       getLead: jest.fn(async () => ({ id: "lead1", name: "Рахимов Изатулло" })),
+      getDossierProfile: jest.fn(async () => ({})),
       hasQueuedDocuments: jest.fn(async () => true),
     }));
     jest.doMock("@/lib/gemini", () => ({ extractMedicalDocument: extract }));
@@ -101,6 +118,7 @@ describe("document queue", () => {
       originalText: "Глюкоза 5,4 холестерин 6,1",
       translationEn: "Glucose 5.4",
       uncertain: [],
+      handwritten: false,
       patientNameOnDoc: "Каримова Мадина",
     }));
     const { kickDocumentQueue, completeDocument, failDocument } = await loadQueue([doc("a"), doc("b")], extract);

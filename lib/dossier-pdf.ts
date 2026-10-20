@@ -13,6 +13,16 @@ import { ensurePdfFonts } from "@/lib/pdf-fonts";
 const ACCENT = "#1e3a8a";
 const MUTED = "#64748b";
 
+// Ширина строки в символах при 10.5 pt на A4 с полями — для оценки высоты документа.
+const CHARS_PER_LINE = 95;
+const SHORT_DOCUMENT_LINES = 32;
+
+function estimateLines(text: string): number {
+  return text
+    .split("\n")
+    .reduce((sum, line) => sum + Math.max(1, Math.ceil(line.length / CHARS_PER_LINE)), 0);
+}
+
 export interface DossierPatient {
   name: string;
   dateOfBirth?: string;
@@ -91,29 +101,62 @@ export function buildDossierDefinition(
     });
   }
 
-  data.sections.forEach((s) => {
+  // Документы идут подряд, без лишних пустых страниц: короткий документ целиком
+  // неразрывен (не повиснет заголовок на одной странице, а текст на другой),
+  // у длинного неразрывны заголовок и первый абзац. Первый документ начинается
+  // с новой страницы — после титула и оглавления.
+  data.sections.forEach((s, index) => {
     const meta = [s.date ? `Date: ${s.date}` : null, s.language ? `Original language: ${s.language}` : null]
       .filter(Boolean)
       .join("   |   ");
-    content.push({
-      text: `${s.number}. ${s.title}`,
-      fontSize: 14,
-      bold: true,
-      color: ACCENT,
-      pageBreak: "before",
+    const paragraphs = s.text.split(/\n{2,}/).filter((p) => p.trim() !== "");
+    const body = (text: string): Content => ({
+      text,
+      fontSize: 10.5,
+      lineHeight: 1.25,
+      preserveLeadingSpaces: true,
+      margin: [0, 0, 0, 6],
     });
-    if (meta) content.push({ text: meta, fontSize: 9, color: MUTED, margin: [0, 2, 0, 0] });
-    content.push(rule("#cbd5e1", 0.5));
-    // Абзацы сохраняются как в переводе; строки результатов анализов — по одной.
-    content.push({ text: s.text, fontSize: 10.5, lineHeight: 1.25, preserveLeadingSpaces: true });
+    const notes: Content[] = [];
+    if (s.handwritten) {
+      notes.push({
+        text: "Handwritten original: wording may be approximate. See the original image provided separately.",
+        fontSize: 8.5,
+        italics: true,
+        color: MUTED,
+        margin: [0, 4, 0, 0],
+      });
+    }
     if (s.hasUncertain) {
-      content.push({
+      notes.push({
         text: "Fragments marked (illegible) or (?) could not be read reliably in the original document.",
         fontSize: 8.5,
         italics: true,
         color: MUTED,
-        margin: [0, 10, 0, 0],
+        margin: [0, 4, 0, 0],
       });
+    }
+
+    const header: Content[] = [
+      { text: `${s.number}. ${s.title}`, fontSize: 14, bold: true, color: ACCENT },
+      ...(meta ? [{ text: meta, fontSize: 9, color: MUTED, margin: [0, 2, 0, 0] } as Content] : []),
+      rule("#cbd5e1", 0.5),
+    ];
+    const short = estimateLines(s.text) <= SHORT_DOCUMENT_LINES;
+
+    // У длинного документа неразрывны только заголовок и первые строки, остальное
+    // течёт по страницам — иначе он целиком уезжал бы на новую страницу, оставляя пустоту.
+    const lines = s.text.split("\n");
+    content.push({
+      stack: short
+        ? [...header, ...paragraphs.map(body), ...notes]
+        : [...header, body(lines.slice(0, 3).join("\n"))],
+      unbreakable: true,
+      margin: [0, index === 0 ? 0 : 16, 0, 0],
+      ...(index === 0 ? { pageBreak: "before" as const } : {}),
+    });
+    if (!short) {
+      content.push(body(lines.slice(3).join("\n")), ...notes);
     }
   });
 

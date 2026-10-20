@@ -6,7 +6,7 @@ import { createLogger } from "@/lib/logger";
 import { ECHO_WINDOW_MS, findEchoMatch } from "@/lib/outgoing-echo";
 import { applyTeamPatch, UNASSIGNED, type TeamPatch, type TeamSettings } from "@/lib/team";
 import { DEFAULT_CRM_TIMEZONE, endOfDayInZone } from "@/lib/touches";
-import { MAX_DOCUMENT_ATTEMPTS } from "@/lib/documents";
+import { isMostlyIllegible, MAX_DOCUMENT_ATTEMPTS } from "@/lib/documents";
 import type {
   CaseAssistantMessage,
   CaseAssistantRole,
@@ -14,6 +14,7 @@ import type {
   DocumentCategory,
   DocumentSource,
   DocumentStatus,
+  DossierProfile,
   Lead,
   MessageSender,
   PatientDocument,
@@ -736,6 +737,11 @@ interface DocumentDoc {
   reviewed: boolean;
   include: boolean;
   mediaMessageId?: ObjectId;
+  handwritten?: boolean;
+  patientDob?: string;
+  patientGender?: "Male" | "Female";
+  mergedInto?: ObjectId;
+  pageNo?: number;
 }
 
 // Если разбор завис дольше (например, Render перезапустил сервис посреди
@@ -772,6 +778,11 @@ function toPatientDocument(doc: DocumentDoc): PatientDocument {
     reviewed: doc.reviewed,
     include: doc.include,
     mediaMessageId: doc.mediaMessageId?.toString(),
+    handwritten: doc.handwritten,
+    patientDob: doc.patientDob,
+    patientGender: doc.patientGender,
+    mergedInto: doc.mergedInto?.toString(),
+    pageNo: doc.pageNo,
   };
 }
 
@@ -882,6 +893,8 @@ export interface DocumentPatch {
   reviewed?: boolean;
   /** «pending» — поставить в очередь (разбор или повтор после ошибки). */
   queue?: boolean;
+  /** Отделить страницу от документа, с которым она была объединена. */
+  unmerge?: boolean;
 }
 
 export async function updateDocument(
@@ -891,10 +904,14 @@ export async function updateDocument(
 ): Promise<PatientDocument | undefined> {
   if (!ObjectId.isValid(leadId) || !ObjectId.isValid(docId)) return undefined;
   const col = await documentsCollection();
-  const { queue, ...fields } = patch;
+  const { queue, unmerge, ...fields } = patch;
   const set: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(fields)) if (v !== undefined) set[k] = v;
   const unset: Record<string, ""> = {};
+  if (unmerge) {
+    unset.mergedInto = "";
+    unset.pageNo = "";
+  }
   if (queue) {
     set.status = "pending";
     set.attempts = 0;
@@ -919,7 +936,83 @@ export async function deleteDocument(leadId: string, docId: string): Promise<boo
   if (!ObjectId.isValid(leadId) || !ObjectId.isValid(docId)) return false;
   const col = await documentsCollection();
   const res = await col.deleteOne({ _id: new ObjectId(docId), leadId: new ObjectId(leadId) });
+  if (res.deletedCount > 0) {
+    // Страницы удалённого документа становятся самостоятельными документами.
+    await col.updateMany({ mergedInto: new ObjectId(docId) }, { $unset: { mergedInto: "", pageNo: "" } });
+  }
   return res.deletedCount > 0;
+}
+
+/**
+ * Склеивает документы в один: первый id — главный (название, дата, категория),
+ * остальные становятся его страницами по порядку. Нельзя клеить документы,
+ * у которых уже есть свои страницы или которые сами чья-то страница.
+ */
+export async function mergeDocuments(
+  leadId: string,
+  ids: string[]
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const unique = Array.from(new Set(ids));
+  if (unique.length < 2 || !unique.every((id) => ObjectId.isValid(id)) || !ObjectId.isValid(leadId)) {
+    return { ok: false, error: "Выберите два и больше документов" };
+  }
+  const col = await documentsCollection();
+  const leadObjectId = new ObjectId(leadId);
+  const objectIds = unique.map((id) => new ObjectId(id));
+  const found = await col.find({ _id: { $in: objectIds }, leadId: leadObjectId }, { projection: NO_BYTES }).toArray();
+  if (found.length !== unique.length) return { ok: false, error: "Документ не найден" };
+
+  const [primaryId, ...pageIds] = objectIds;
+  const primary = found.find((d) => d._id.equals(primaryId));
+  if (primary?.mergedInto) return { ok: false, error: "Главный документ сам является страницей — сначала отделите его" };
+  const others = found.filter((d) => !d._id.equals(primaryId));
+  if (others.some((d) => d.mergedInto)) return { ok: false, error: "Часть документов уже объединена — сначала отделите их" };
+  const hasOwnPages = await col.findOne({ mergedInto: { $in: pageIds } }, { projection: { _id: 1 } });
+  if (hasOwnPages) return { ok: false, error: "У одного из документов уже есть страницы — сначала отделите их" };
+
+  const existing = await col.find({ mergedInto: primaryId }, { projection: { pageNo: 1 } }).toArray();
+  let nextPage = existing.reduce((max, d) => Math.max(max, d.pageNo ?? 1), 1) + 1;
+  for (const id of pageIds) {
+    await col.updateOne({ _id: id }, { $set: { mergedInto: primaryId, pageNo: nextPage++ } });
+  }
+  return { ok: true };
+}
+
+export async function unmergeDocument(leadId: string, docId: string): Promise<void> {
+  if (!ObjectId.isValid(leadId) || !ObjectId.isValid(docId)) return;
+  const col = await documentsCollection();
+  await col.updateOne(
+    { _id: new ObjectId(docId), leadId: new ObjectId(leadId) },
+    { $unset: { mergedInto: "", pageNo: "" } }
+  );
+}
+
+// ───────────────────────── Профиль досье ─────────────────────────
+// Имя латиницей, дата рождения и пол для титульной страницы. Хранятся отдельно
+// от Leads, чтобы не трогать схему лидов; имя также подсказывается модели при
+// разборе, чтобы во всех документах оно писалось одинаково.
+
+interface DossierProfileDoc extends DossierProfile {
+  _id: ObjectId; // = _id лида
+}
+
+export async function getDossierProfile(leadId: string): Promise<DossierProfile> {
+  if (!ObjectId.isValid(leadId)) return {};
+  const db = await getDb();
+  const doc = await db.collection<DossierProfileDoc>("DossierProfiles").findOne({ _id: new ObjectId(leadId) });
+  return doc ? { name: doc.name, dob: doc.dob, gender: doc.gender } : {};
+}
+
+export async function saveDossierProfile(leadId: string, profile: DossierProfile): Promise<void> {
+  if (!ObjectId.isValid(leadId)) return;
+  const db = await getDb();
+  await db
+    .collection<DossierProfileDoc>("DossierProfiles")
+    .updateOne(
+      { _id: new ObjectId(leadId) },
+      { $set: { name: profile.name ?? "", dob: profile.dob ?? "", gender: profile.gender } },
+      { upsert: true }
+    );
 }
 
 /** Есть ли что разбирать (в очереди или зависшее) — чтобы запустить очередь после рестарта. */
@@ -965,6 +1058,9 @@ export async function completeDocument(
     docDate?: string;
     sourceLanguage?: string;
     patientNameOnDoc?: string;
+    patientDob?: string;
+    patientGender?: "Male" | "Female";
+    handwritten?: boolean;
     originalText: string;
     translationEn: string;
     uncertain: string[];
@@ -978,8 +1074,9 @@ export async function completeDocument(
       $set: {
         ...result,
         status: "done",
-        // Документы-отчёты и снимки по умолчанию попадают в PDF, «прочее» — нет.
-        include: result.category !== "other",
+        // Документы-отчёты и снимки по умолчанию попадают в PDF, «прочее» и
+        // почти нечитаемые листы — нет (координатор может включить вручную).
+        include: result.category !== "other" && !isMostlyIllegible(result.translationEn),
         reviewed: false,
       },
       $unset: { error: "", startedAt: "" },

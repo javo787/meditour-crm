@@ -1,7 +1,7 @@
 // Подготовка данных для PDF-досье и для контекста ассистента Medical Request.
 // Чистая логика: из списка документов выбирает, что и в каком порядке идёт
 // в итоговый файл.
-import { languageName, sortDocuments } from "@/lib/documents";
+import { findDuplicatePairs, groupDocuments, languageName, sortDocuments } from "@/lib/documents";
 import type { PatientDocument } from "@/lib/types";
 
 export interface DossierSection {
@@ -11,6 +11,7 @@ export interface DossierSection {
   language?: string;
   text: string;
   hasUncertain: boolean;
+  handwritten: boolean;
 }
 
 export interface DossierImagingItem {
@@ -21,31 +22,64 @@ export interface DossierImagingItem {
 export interface DossierData {
   sections: DossierSection[];
   imaging: DossierImagingItem[];
-  /** Включённые документы, которые координатор ещё не отметил как проверенные. */
+  /** Включённые документы (разделы), которые координатор ещё не отметил как проверенные. */
   unreviewed: number;
   /** Документы, которые ещё в очереди или читаются — досье лучше собирать после них. */
   inProgress: number;
+  /** Пары номеров разделов, которые выглядят как две фото одного документа. */
+  duplicates: Array<[number, number]>;
 }
 
 export function prepareDossier(docs: PatientDocument[]): DossierData {
   const inProgress = docs.filter((d) => d.status === "pending" || d.status === "processing").length;
-  const ready = sortDocuments(docs.filter((d) => d.status === "done" && d.include));
+  const allGroups = groupDocuments(docs);
 
-  const reports = ready.filter((d) => d.category === "report" && (d.translationEn ?? "").trim() !== "");
-  const imaging = ready.filter((d) => d.category === "imaging");
+  // Многостраничный документ — один раздел: страницы склеиваются по порядку,
+  // название/дата/категория берутся с первой страницы (дата — с первой, где она есть).
+  const ready = sortDocuments(
+    allGroups
+      .filter((g) => g.primary.status === "done" && g.primary.include)
+      .map((group) => ({
+        group,
+        at: group.primary.at,
+        docDate: group.primary.docDate ?? group.pages.find((p) => p.docDate)?.docDate,
+      }))
+  );
+
+  const textOf = (pages: PatientDocument[]) =>
+    pages
+      .filter((p) => p.status === "done")
+      .map((p) => (p.translationEn ?? "").trim())
+      .filter(Boolean)
+      .join("\n\n");
+
+  const reports = ready.filter((r) => r.group.primary.category === "report" && textOf(r.group.pages) !== "");
+  const imaging = ready.filter((r) => r.group.primary.category === "imaging");
+
+  const sectionNumberByPrimary = new Map(reports.map((r, i) => [r.group.primary.id, i + 1]));
+  const duplicates: Array<[number, number]> = [];
+  for (const [a, b] of findDuplicatePairs(allGroups)) {
+    const na = sectionNumberByPrimary.get(a.primary.id);
+    const nb = sectionNumberByPrimary.get(b.primary.id);
+    if (na && nb) duplicates.push(na < nb ? [na, nb] : [nb, na]);
+  }
+
+  const isReviewed = (pages: PatientDocument[]) => pages.filter((p) => p.status === "done").every((p) => p.reviewed);
 
   return {
-    sections: reports.map((d, i) => ({
+    sections: reports.map((r, i) => ({
       number: i + 1,
-      title: d.title || d.filename,
-      date: d.docDate,
-      language: languageName(d.sourceLanguage),
-      text: (d.translationEn ?? "").trim(),
-      hasUncertain: (d.uncertain?.length ?? 0) > 0,
+      title: r.group.primary.title || r.group.primary.filename,
+      date: r.docDate,
+      language: languageName(r.group.primary.sourceLanguage),
+      text: textOf(r.group.pages),
+      hasUncertain: r.group.pages.some((p) => (p.uncertain?.length ?? 0) > 0),
+      handwritten: r.group.pages.some((p) => p.handwritten === true),
     })),
-    imaging: imaging.map((d) => ({ title: d.title || d.filename, date: d.docDate })),
-    unreviewed: [...reports, ...imaging].filter((d) => !d.reviewed).length,
+    imaging: imaging.map((r) => ({ title: r.group.primary.title || r.group.primary.filename, date: r.docDate })),
+    unreviewed: [...reports, ...imaging].filter((r) => !isReviewed(r.group.pages)).length,
     inProgress,
+    duplicates,
   };
 }
 

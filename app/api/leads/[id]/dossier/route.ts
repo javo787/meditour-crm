@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
-import { getDocuments, getLead } from "@/lib/db";
+import { getDocuments, getDossierProfile, getLead } from "@/lib/db";
 import { looksLikeRealName, transliterate } from "@/lib/documents";
 import { prepareDossier } from "@/lib/dossier";
 import { buildDossierPdf } from "@/lib/dossier-pdf";
@@ -49,15 +49,33 @@ export async function GET(request: Request, { params }: { params: { id: string }
       { status: 409 }
     );
   }
-  if (data.unreviewed > 0 && !parsed.data.force) {
+  // Всё, что стоит перепроверить перед отправкой врачам, — одним подтверждением.
+  const problems: string[] = [];
+  if (data.duplicates.length > 0) {
+    problems.push(
+      `возможные дубли: ${data.duplicates.map(([a, b]) => `разделы ${a} и ${b}`).join(", ")}`
+    );
+  }
+  if (data.unreviewed > 0) problems.push(`не проверено документов: ${data.unreviewed}`);
+  if (problems.length > 0 && !parsed.data.force) {
     return NextResponse.json(
-      { error: `Не проверено документов: ${data.unreviewed}`, code: "unreviewed", unreviewed: data.unreviewed },
+      { error: `Перед отправкой стоит проверить: ${problems.join("; ")}`, code: "needs-confirmation", problems },
       { status: 409 }
     );
   }
 
-  const name = parsed.data.name || (looksLikeRealName(lead.name) ? transliterate(lead.name) : "");
-  const pdf = await buildDossierPdf({ name, dateOfBirth: parsed.data.dob, gender: parsed.data.gender }, data);
+  // Что не пришло в запросе — берём из сохранённого профиля досье.
+  const profile = await getDossierProfile(params.id);
+  const name =
+    parsed.data.name || profile.name || (looksLikeRealName(lead.name) ? transliterate(lead.name) : "");
+  const pdf = await buildDossierPdf(
+    {
+      name,
+      dateOfBirth: parsed.data.dob || profile.dob || undefined,
+      gender: parsed.data.gender || profile.gender,
+    },
+    data
+  );
   logger.info("PDF-досье собран", {
     leadId: params.id,
     sections: data.sections.length,
