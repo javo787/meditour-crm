@@ -20,6 +20,15 @@ const MONEY = new RegExp(
 );
 const HAS_CURRENCY = /US\$|USD|\$|dollar/i;
 
+// Английские приписки к сумме («per day») и их русские пары; закрытый набор, регистр не важен.
+const PER_UNIT: Array<[RegExp, string]> = [
+  [/\s+per\s+day\b|\s+a\s+day\b|\s+daily\b|\s*\/\s*day\b/gi, " в день"],
+  [/\s+per\s+night\b/gi, " за ночь"],
+  [/\s+per\s+visit\b/gi, " за визит"],
+  [/\s+per\s+session\b/gi, " за сеанс"],
+  [/\s+per\s+week\b/gi, " в неделю"],
+];
+
 const MONTHS_GENITIVE = [
   "января", "февраля", "марта", "апреля", "мая", "июня",
   "июля", "августа", "сентября", "октября", "ноября", "декабря",
@@ -43,9 +52,10 @@ const toNumber = (token: string): number =>
     ? Number(token.replace(/[ , ]/g, ""))
     : Number(token.replace(",", "."));
 
-// Сумма в виде, как её печатаем: без валюты, диапазон через «–», разряды неразрывным пробелом.
+// Сумма в виде, как её печатаем: без валюты, диапазон через «–», разряды неразрывным пробелом, приписка по-русски.
 export function formatAmount(raw: string): string {
   let s = joinThousands(raw.replace(/US\$|USD|\$/gi, "").replace(/\/-/g, "").trim());
+  for (const [english, russian] of PER_UNIT) s = s.replace(english, russian);
   s = s.replace(/(\d)[  ]*[-–—][  ]*(?=\d)/g, "$1 – ");
   s = s.replace(/(^|[^\d.])(\d{4,})/g, (_, before: string, digits: string) => before + groupDigits(digits));
   return s.replace(/ {2,}/g, " ").trim();
