@@ -152,9 +152,11 @@ async function handleComment(event: CommentEvent, ctx: Ctx, key: string): Promis
       ctx.log.error("публичный ответ на комментарий не отправлен", { key, reason: describeFailure(publicRes) });
     }
 
-    // Личный ответ не шлём, если этому человеку недавно уже писали в Direct.
+    // Личный ответ не шлём, если этому человеку недавно уже писали в Direct. Контакт перечитываем: за паузу перед
+    // публичным ответом ему могли отправить приглашение (или сотрудник мог ответить вручную).
+    const fresh = await ctx.store.getContact(event.fromId);
     let privateRes: GraphResult<unknown> | null = null;
-    if (!inCooldown(contact?.lastDmInviteAt, now, ctx.cfg.dmCooldownMs)) {
+    if (!inCooldown(fresh?.lastDmInviteAt, ctx.now(), ctx.cfg.dmCooldownMs)) {
       if (ctx.cfg.replyDelay) await ctx.sleep(randomDelay(ctx.random, PRIVATE_DELAY));
       privateRes = await ctx.graph.sendDirect(
         ctx.cfg,

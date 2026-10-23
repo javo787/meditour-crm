@@ -188,6 +188,17 @@ describe("comments", () => {
     expect(out).toEqual([{ key: "comment:C1", outcome: "replied" }]);
   });
 
+  it("re-reads the contact before the private reply: a DM invitation made during the pause suppresses it", async () => {
+    const h = harness();
+    h.store.getContact
+      .mockResolvedValueOnce({ _id: USER })
+      .mockResolvedValueOnce({ _id: USER, lastDmInviteAt: NOW.toISOString() });
+    const out = await processInstagramEvents([comment()], h.deps);
+    expect(h.graph.replyToComment).toHaveBeenCalledTimes(1);
+    expect(h.graph.sendDirect).not.toHaveBeenCalled();
+    expect(out).toEqual([{ key: "comment:C1", outcome: "replied" }]);
+  });
+
   it("a failed public reply does not stop the private reply", async () => {
     const h = harness();
     h.graph.replyToComment.mockResolvedValueOnce(fail(400, 100));
