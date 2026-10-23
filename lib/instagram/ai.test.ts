@@ -83,19 +83,45 @@ describe("sanitizeBubbles", () => {
     expect(sanitizeBubbles(["  Привет  ", "   ", "", "**"])).toEqual(["Привет"]);
   });
 
-  it("пузырь длиннее 900 символов режется по последнему пробелу до 900 и получает многоточие", () => {
-    const text = `${"а".repeat(500)} ${"б".repeat(500)}`;
-    expect(sanitizeBubbles([text])).toEqual([`${"а".repeat(500)}…`]);
+  it("пузырь длиннее 950 байт режется по последнему пробелу, уложившемуся в лимит, и получает многоточие", () => {
+    const words = Array(86).fill("слово").join(" ");
+    const [out] = sanitizeBubbles([`${words} слово`]);
+    expect(out).toBe(`${words}…`);
+    expect(Buffer.byteLength(out, "utf8")).toBeLessThanOrEqual(950);
   });
 
-  it("пузырь ровно из 900 символов не режется", () => {
-    expect(sanitizeBubbles(["а".repeat(900)])).toEqual(["а".repeat(900)]);
+  it("пузырь ровно из 950 байт (475 кириллических букв) не режется", () => {
+    const text = "а".repeat(475);
+    expect(sanitizeBubbles([text])).toEqual([text]);
   });
 
-  it("длинное слово без пробелов режется жёстко, итог не длиннее 900 символов", () => {
+  it("пузырь из 952 байт (476 кириллических букв) режется, итог не длиннее 950 байт", () => {
+    const [out] = sanitizeBubbles(["а".repeat(476)]);
+    expect(out).toBe(`${"а".repeat(473)}…`);
+    expect(Buffer.byteLength(out, "utf8")).toBeLessThanOrEqual(950);
+  });
+
+  it("длинное слово без пробелов режется жёстко по байтам: 473 буквы и многоточие", () => {
     const [out] = sanitizeBubbles(["б".repeat(950)]);
-    expect(out).toHaveLength(900);
-    expect(out.endsWith("…")).toBe(true);
+    expect(out).toBe(`${"б".repeat(473)}…`);
+    expect(Buffer.byteLength(out, "utf8")).toBe(949);
+  });
+
+  it("эмодзи (4 байта) не разрываются: 236 штук и многоточие", () => {
+    const [out] = sanitizeBubbles(["😀".repeat(300)]);
+    expect(out).toBe(`${"😀".repeat(236)}…`);
+    expect(Buffer.byteLength(out, "utf8")).toBeLessThanOrEqual(950);
+  });
+
+  it("кириллица и эмодзи вперемешку: эмодзи считается в 4 байта, итог в лимите", () => {
+    const [out] = sanitizeBubbles([`${"б".repeat(470)}😀${"б".repeat(10)}`]);
+    expect(out).toBe(`${"б".repeat(470)}😀б…`);
+    expect(Buffer.byteLength(out, "utf8")).toBeLessThanOrEqual(950);
+  });
+
+  it("суррогатная пара на границе лимита не разрывается", () => {
+    const [out] = sanitizeBubbles([`${"a".repeat(945)}😀😀`]);
+    expect(out).toBe(`${"a".repeat(945)}…`);
   });
 
   it("больше трёх пузырей: лишние дописываются к третьему через пустую строку", () => {
@@ -106,7 +132,7 @@ describe("sanitizeBubbles", () => {
     expect(sanitizeBubbles(["1", "2", " ", "3", "4"])).toEqual(["1", "2", "3\n\n4"]);
   });
 
-  it("объединённый третий пузырь тоже режется до 900 символов", () => {
+  it("объединённый третий пузырь тоже режется до 950 байт", () => {
     const out = sanitizeBubbles(["a", "b", "c", "x".repeat(600), "y".repeat(600)]);
     expect(out).toHaveLength(3);
     expect(out[2]).toBe(`c\n\n${"x".repeat(600)}…`);
@@ -158,6 +184,14 @@ describe("needsWhatsAppLine", () => {
 
   it("упоминание wa.me без номера тоже считается ссылкой", () => {
     expect(needsWhatsAppLine([], ["Вот wa.me/xyz"])).toBe(false);
+  });
+
+  it("цифры 992 внутри другого числа (цена 9920) не считаются номером WhatsApp", () => {
+    expect(needsWhatsAppLine([], ["Стоимость 9920 долларов"])).toBe(true);
+  });
+
+  it("номер с плюсом +992 в новом пузыре считается ссылкой на WhatsApp", () => {
+    expect(needsWhatsAppLine([], ["Пишите: +992 00 550 77 77"])).toBe(false);
   });
 
   it("everyN = 1: строка нужна в каждом ответе, даже если ссылка была раньше", () => {
@@ -267,5 +301,46 @@ describe("composeDirectReply", () => {
     await expect(composeDirectReply({ history: [], items: ITEMS_RU, ctx: CTX, now: NOW, ask })).rejects.toThrow(
       "gemini unavailable",
     );
+  });
+
+  it("цена 9920 не считается номером WhatsApp: строка дописывается к пузырю", async () => {
+    const { ask } = fakeAsk({ messages: ["Стоимость 9920 долларов."] });
+
+    const r = await composeDirectReply({ history: [], items: ITEMS_RU, ctx: CTX, now: NOW, ask });
+
+    expect(r).toEqual({ kind: "reply", bubbles: [`Стоимость 9920 долларов.\n\n${LINE_RU}`] });
+  });
+
+  it("ответ длиннее 950 байт режется по байтам; строка WhatsApp не влезает и уходит отдельным пузырём", async () => {
+    const { ask } = fakeAsk({ messages: ["я".repeat(600)] });
+
+    const r = await composeDirectReply({ history: [], items: ITEMS_RU, ctx: CTX, now: NOW, ask });
+
+    expect(r).toEqual({ kind: "reply", bubbles: [`${"я".repeat(473)}…`, LINE_RU] });
+  });
+
+  it("последний пузырь 940 байт: строка WhatsApp не влезает, уходит отдельным пузырём", async () => {
+    const { ask } = fakeAsk({ messages: ["б".repeat(470)] });
+
+    const r = await composeDirectReply({ history: [], items: ITEMS_RU, ctx: CTX, now: NOW, ask });
+
+    expect(r).toEqual({ kind: "reply", bubbles: ["б".repeat(470), LINE_RU] });
+  });
+
+  it("строка WhatsApp ровно до 950 байт дописывается к последнему пузырю", async () => {
+    const last = "a".repeat(948 - Buffer.byteLength(LINE_RU, "utf8"));
+    const { ask } = fakeAsk({ messages: [last] });
+
+    const r = await composeDirectReply({ history: [], items: ITEMS_RU, ctx: CTX, now: NOW, ask });
+
+    expect(r).toEqual({ kind: "reply", bubbles: [`${last}\n\n${LINE_RU}`] });
+  });
+
+  it("три пузыря от модели плюс отдельная строка WhatsApp дают четыре пузыря", async () => {
+    const { ask } = fakeAsk({ messages: ["1", "2", "б".repeat(470)] });
+
+    const r = await composeDirectReply({ history: [], items: ITEMS_RU, ctx: CTX, now: NOW, ask });
+
+    expect(r).toEqual({ kind: "reply", bubbles: ["1", "2", "б".repeat(470), LINE_RU] });
   });
 });

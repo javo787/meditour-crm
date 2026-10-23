@@ -203,7 +203,7 @@ describe("parseInstagramWebhook", () => {
     expect(parseInstagramWebhook(body)[0]).toMatchObject({ hasAttachment: false });
   });
 
-  it("эхо-сообщение (is_echo) разбирается как echo с получателем", () => {
+  it("эхо-сообщение (is_echo) разбирается как echo с получателем и текстом", () => {
     const body = {
       object: "instagram",
       entry: [
@@ -220,8 +220,68 @@ describe("parseInstagramWebhook", () => {
       ],
     };
     expect(parseInstagramWebhook(body)).toEqual([
-      { type: "echo", accountId: ACCOUNT, mid: "aWdfZAG1f0000000000000003", recipientId: USER },
+      { type: "echo", accountId: ACCOUNT, mid: "aWdfZAG1f0000000000000003", recipientId: USER, text: "Our reply" },
     ]);
+  });
+
+  it("эхо с кириллицей и эмодзи сохраняет текст как есть", () => {
+    const text = "Здравствуйте! Ждём вас ✨";
+    const body = {
+      object: "instagram",
+      entry: [
+        {
+          id: ACCOUNT,
+          messaging: [
+            {
+              sender: { id: ACCOUNT },
+              recipient: { id: USER },
+              message: { mid: "aWdfZAG1f0000000000000004", is_echo: true, text },
+            },
+          ],
+        },
+      ],
+    };
+    expect(parseInstagramWebhook(body)[0]).toMatchObject({ type: "echo", text });
+  });
+
+  it("эхо-вложение без текста разбирается без поля text", () => {
+    const body = {
+      object: "instagram",
+      entry: [
+        {
+          id: ACCOUNT,
+          messaging: [
+            {
+              sender: { id: ACCOUNT },
+              recipient: { id: USER },
+              message: { mid: "aWdfZAG1f0000000000000005", is_echo: true, attachments: [{ type: "image" }] },
+            },
+          ],
+        },
+      ],
+    };
+    const [event] = parseInstagramWebhook(body);
+    expect(event).toEqual({ type: "echo", accountId: ACCOUNT, mid: "aWdfZAG1f0000000000000005", recipientId: USER });
+    expect(event).not.toHaveProperty("text");
+  });
+
+  it("эхо, у которого text не строка, разбирается без поля text", () => {
+    const body = {
+      object: "instagram",
+      entry: [
+        {
+          id: ACCOUNT,
+          messaging: [
+            {
+              sender: { id: ACCOUNT },
+              recipient: { id: USER },
+              message: { mid: "aWdfZAG1f0000000000000006", is_echo: true, text: 42 },
+            },
+          ],
+        },
+      ],
+    };
+    expect(parseInstagramWebhook(body)[0]).not.toHaveProperty("text");
   });
 
   it("подтверждение прочтения, реакция и постбэк без message игнорируются", () => {

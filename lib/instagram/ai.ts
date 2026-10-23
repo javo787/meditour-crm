@@ -5,9 +5,14 @@ import { askGemini } from "@/lib/gemini";
 import type { ChatMessage } from "@/lib/types";
 import { detectLanguage, type TextCtx } from "./replies";
 
-const MAX_BUBBLE = 900; // запас до лимита Instagram в 1000 символов
-const MAX_BUBBLES = 3;
-const WA_MARK = /992|wa\.me/;
+// Лимит Instagram — 1000 байт UTF-8 (кириллица занимает 2 байта, эмодзи — 4), берём с запасом.
+const MAX_BUBBLE_BYTES = 950;
+const ELLIPSIS = "…";
+const MAX_BUBBLES = 3; // лимит на текст модели; строка WhatsApp может добавить четвёртый пузырь
+// Голое 992 не годится: попадает в цены вроде 9920.
+const WA_MARK = /\+992|wa\.me/;
+
+const byteLength = (s: string): number => Buffer.byteLength(s, "utf8");
 
 export type DirectReply =
   | { kind: "reply"; bubbles: string[] }
@@ -41,13 +46,26 @@ function cleanBubble(raw: string): string {
     .trim();
 }
 
-// Пузырь длиннее MAX_BUBBLE режется по последнему пробелу до лимита и получает многоточие (итог не длиннее MAX_BUBBLE).
+// Самый длинный префикс из целых символов (кодовых точек), занимающий не больше budget байт: суррогатные пары не рвутся.
+function prefixWithinBytes(s: string, budget: number): string {
+  let used = 0;
+  let out = "";
+  for (const ch of s) {
+    used += byteLength(ch);
+    if (used > budget) break;
+    out += ch;
+  }
+  return out;
+}
+
+// Пузырь длиннее MAX_BUBBLE_BYTES режется по последнему пробелу, который уложился в лимит, и получает многоточие.
+// Без пробела режем жёстко по целым символам. Итог, включая многоточие, не длиннее MAX_BUBBLE_BYTES.
 function capBubble(s: string): string {
-  if (s.length <= MAX_BUBBLE) return s;
-  const head = s.slice(0, MAX_BUBBLE);
+  if (byteLength(s) <= MAX_BUBBLE_BYTES) return s;
+  const head = prefixWithinBytes(s, MAX_BUBBLE_BYTES - byteLength(ELLIPSIS));
   const ws = head.search(/\s\S*$/);
-  const cut = ws > 0 ? ws : MAX_BUBBLE - 1;
-  return `${head.slice(0, cut).trimEnd()}…`;
+  const cut = ws > 0 ? ws : head.length;
+  return `${head.slice(0, cut).trimEnd()}${ELLIPSIS}`;
 }
 
 export function sanitizeBubbles(bubbles: string[]): string[] {
@@ -100,7 +118,11 @@ export async function composeDirectReply(p: {
 
   if (needsWhatsAppLine(p.history, bubbles)) {
     const lang = detectLanguage(p.items[p.items.length - 1]?.text ?? "");
-    bubbles[bubbles.length - 1] += `\n\n${whatsappLine(lang, p.ctx)}`;
+    const line = whatsappLine(lang, p.ctx);
+    const joined = `${bubbles[bubbles.length - 1]}\n\n${line}`;
+    // Строка дописывается к последнему пузырю, если он вмещается в лимит; иначе уходит отдельным пузырём.
+    if (byteLength(joined) <= MAX_BUBBLE_BYTES) bubbles[bubbles.length - 1] = joined;
+    else bubbles.push(line);
   }
   return { kind: "reply", bubbles };
 }

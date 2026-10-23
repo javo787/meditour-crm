@@ -14,7 +14,7 @@ export type InstagramEvent =
       parentId?: string;
     }
   | { type: "dm"; accountId: string; mid: string; senderId: string; text?: string; hasAttachment: boolean }
-  | { type: "echo"; accountId: string; mid: string; recipientId: string };
+  | { type: "echo"; accountId: string; mid: string; recipientId: string; text?: string };
 
 type Json = Record<string, unknown>;
 
@@ -60,7 +60,10 @@ function parseMessaging(accountId: string, item: unknown): InstagramEvent | null
 
   if (message.is_echo === true) {
     if (!isRecord(item.recipient) || typeof item.recipient.id !== "string") return null;
-    return { type: "echo", accountId, mid: message.mid, recipientId: item.recipient.id };
+    const echo: InstagramEvent = { type: "echo", accountId, mid: message.mid, recipientId: item.recipient.id };
+    // Текст эха — то, что написал сотрудник в Direct; у вложений текста нет.
+    if (typeof message.text === "string") echo.text = message.text;
+    return echo;
   }
 
   if (!isRecord(item.sender) || typeof item.sender.id !== "string") return null;
