@@ -1,9 +1,11 @@
 // Хранение бота Instagram в MongoDB (база meditur, коллекции без индексов, как lib/plans/db.ts):
-// журнал событий для дедупликации вебхуков, контакты (cooldown), токен Graph API с продлением.
+// журнал событий для дедупликации вебхуков, контакты (cooldown и пауза ИИ), переписка для ИИ,
+// токен Graph API с продлением.
 import { createHash } from "crypto";
-import type { Document } from "mongodb";
+import type { Document, ObjectId } from "mongodb";
 
 import { getDb } from "@/lib/mongodb";
+import type { ChatMessage } from "@/lib/types";
 import type { GraphResult } from "./graph";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -22,6 +24,19 @@ export interface InstagramContact {
   _id: string; // id пользователя Instagram
   lastDmInviteAt?: string;
   lastCommentReplyAt?: string;
+  aiPausedUntil?: string; // до этого момента ИИ не отвечает в личке (ISO)
+}
+
+export type IgMessageFrom = "patient" | "ai" | "coordinator";
+
+// Переписка в личке Instagram: сообщения пациента, ответы бота и координатора.
+interface IgMessageDoc {
+  _id: ObjectId;
+  igUserId: string;
+  from: IgMessageFrom;
+  text: string;
+  at: string; // ISO
+  mid?: string; // id сообщения в Instagram, если он известен
 }
 
 // Единственная запись токена. source — отпечаток токена окружения, по которому понятно, какой токен сохранён.
@@ -67,6 +82,51 @@ export async function markDmInvited(id: string, now: Date = new Date()): Promise
 export async function markCommentReplied(id: string, now: Date = new Date()): Promise<void> {
   const contacts = await collection<InstagramContact>("InstagramContacts");
   await contacts.updateOne({ _id: id }, { $set: { lastCommentReplyAt: now.toISOString() } }, { upsert: true });
+}
+
+export async function pauseAi(igUserId: string, until: Date): Promise<void> {
+  const contacts = await collection<InstagramContact>("InstagramContacts");
+  await contacts.updateOne({ _id: igUserId }, { $set: { aiPausedUntil: until.toISOString() } }, { upsert: true });
+}
+
+export async function addIgMessage(m: {
+  igUserId: string;
+  from: IgMessageFrom;
+  text: string;
+  at?: Date;
+  mid?: string;
+}): Promise<void> {
+  const messages = await collection<Omit<IgMessageDoc, "_id">>("InstagramMessages");
+  await messages.insertOne({
+    igUserId: m.igUserId,
+    from: m.from,
+    text: m.text,
+    at: (m.at ?? new Date()).toISOString(),
+    ...(m.mid !== undefined ? { mid: m.mid } : {}),
+  });
+}
+
+// Последние limit сообщений собеседника, по возрастанию времени.
+export async function getIgMessages(igUserId: string, limit = 30): Promise<ChatMessage[]> {
+  const messages = await collection<IgMessageDoc>("InstagramMessages");
+  const docs = await messages.find({ igUserId }).sort({ at: -1, _id: -1 }).limit(limit).toArray();
+  return docs.reverse().map((d) => ({
+    id: d._id.toString(),
+    leadId: igUserId,
+    from: d.from,
+    text: d.text,
+    at: d.at,
+  }));
+}
+
+export async function findIgMessageByMid(mid: string): Promise<boolean> {
+  const messages = await collection<IgMessageDoc>("InstagramMessages");
+  return (await messages.findOne({ mid })) !== null;
+}
+
+export async function countIgAiMessagesSince(igUserId: string, sinceIso: string): Promise<number> {
+  const messages = await collection<IgMessageDoc>("InstagramMessages");
+  return messages.countDocuments({ igUserId, from: "ai", at: { $gte: sinceIso } });
 }
 
 function sourceOf(envToken: string): string {

@@ -1,14 +1,20 @@
 import { createHash } from "crypto";
+import { ObjectId } from "mongodb";
 
 import { getDb } from "@/lib/mongodb";
 import type { GraphResult } from "./graph";
 import {
+  addIgMessage,
   claimEvent,
+  countIgAiMessagesSince,
   ensureFreshToken,
+  findIgMessageByMid,
   getContact,
   getEffectiveToken,
+  getIgMessages,
   markCommentReplied,
   markDmInvited,
+  pauseAi,
 } from "./store";
 
 jest.mock("@/lib/mongodb", () => ({ getDb: jest.fn() }));
@@ -36,7 +42,13 @@ function duplicateKeyError(): Error {
 const events = { insertOne: jest.fn() };
 const contacts = { findOne: jest.fn(), updateOne: jest.fn() };
 const auth = { findOne: jest.fn(), replaceOne: jest.fn() };
-const collections: Record<string, unknown> = { InstagramEvents: events, InstagramContacts: contacts, InstagramAuth: auth };
+const messages = { insertOne: jest.fn(), find: jest.fn(), findOne: jest.fn(), countDocuments: jest.fn() };
+const collections: Record<string, unknown> = {
+  InstagramEvents: events,
+  InstagramContacts: contacts,
+  InstagramAuth: auth,
+  InstagramMessages: messages,
+};
 
 const getDbMock = getDb as jest.Mock;
 
@@ -283,5 +295,121 @@ describe("InstagramAuth: ensureFreshToken", () => {
     expect(await ensureFreshToken("", refresh, NOW)).toBe("");
     expect(auth.findOne).not.toHaveBeenCalled();
     expect(refresh).not.toHaveBeenCalled();
+  });
+});
+
+describe("InstagramContacts: pauseAi", () => {
+  it("ставит паузу ИИ до указанного времени через upsert", async () => {
+    contacts.updateOne.mockResolvedValueOnce({ acknowledged: true });
+    const until = new Date(NOW.getTime() + 2 * HOUR_MS);
+
+    await pauseAi(CONTACT, until);
+
+    expect(contacts.updateOne).toHaveBeenCalledWith(
+      { _id: CONTACT },
+      { $set: { aiPausedUntil: until.toISOString() } },
+      { upsert: true },
+    );
+  });
+});
+
+describe("InstagramMessages: addIgMessage", () => {
+  it("сохраняет сообщение с временем в ISO и без mid, если mid не передан", async () => {
+    messages.insertOne.mockResolvedValueOnce({ acknowledged: true });
+
+    await addIgMessage({ igUserId: CONTACT, from: "patient", text: "Здравствуйте", at: NOW });
+
+    expect(messages.insertOne).toHaveBeenCalledWith({ igUserId: CONTACT, from: "patient", text: "Здравствуйте", at: NOW_ISO });
+    const [doc] = messages.insertOne.mock.calls[0] as [Record<string, unknown>];
+    expect(doc).not.toHaveProperty("mid");
+  });
+
+  it("сохраняет mid, если он передан", async () => {
+    messages.insertOne.mockResolvedValueOnce({ acknowledged: true });
+
+    await addIgMessage({ igUserId: CONTACT, from: "ai", text: "Ответ", at: NOW, mid: "test-mid-1" });
+
+    expect(messages.insertOne).toHaveBeenCalledWith({
+      igUserId: CONTACT,
+      from: "ai",
+      text: "Ответ",
+      at: NOW_ISO,
+      mid: "test-mid-1",
+    });
+  });
+
+  it("без явного времени берётся текущее", async () => {
+    messages.insertOne.mockResolvedValueOnce({ acknowledged: true });
+
+    await addIgMessage({ igUserId: CONTACT, from: "coordinator", text: "Позвоним завтра" });
+
+    const [doc] = messages.insertOne.mock.calls[0] as [{ at: string }];
+    expect(Math.abs(Date.parse(doc.at) - Date.now())).toBeLessThan(60 * 1000);
+  });
+});
+
+describe("InstagramMessages: getIgMessages", () => {
+  // Курсор запроса: sort и limit возвращают его же, toArray отдаёт заготовленные документы.
+  function cursor(docs: unknown[]) {
+    const c = { sort: jest.fn(), limit: jest.fn(), toArray: jest.fn().mockResolvedValue(docs) };
+    c.sort.mockReturnValue(c);
+    c.limit.mockReturnValue(c);
+    return c;
+  }
+
+  const ID_OLD = new ObjectId("65f0c0ffee0000000000000a");
+  const ID_NEW = new ObjectId("65f0c0ffee0000000000000b");
+
+  it("возвращает последние сообщения по возрастанию времени в формате ChatMessage", async () => {
+    // База отдаёт от новых к старым (sort по убыванию), функция переворачивает порядок.
+    const c = cursor([
+      { _id: ID_NEW, igUserId: CONTACT, from: "ai", text: "Новый ответ", at: ago(HOUR_MS) },
+      { _id: ID_OLD, igUserId: CONTACT, from: "patient", text: "Старый вопрос", at: ago(2 * HOUR_MS) },
+    ]);
+    messages.find.mockReturnValueOnce(c);
+
+    expect(await getIgMessages(CONTACT)).toEqual([
+      { id: ID_OLD.toString(), leadId: CONTACT, from: "patient", text: "Старый вопрос", at: ago(2 * HOUR_MS) },
+      { id: ID_NEW.toString(), leadId: CONTACT, from: "ai", text: "Новый ответ", at: ago(HOUR_MS) },
+    ]);
+    expect(messages.find).toHaveBeenCalledWith({ igUserId: CONTACT });
+    expect(c.sort).toHaveBeenCalledWith({ at: -1, _id: -1 });
+    expect(c.limit).toHaveBeenCalledWith(30);
+  });
+
+  it("лимит по умолчанию 30, свой лимит передаётся в запрос", async () => {
+    const c = cursor([]);
+    messages.find.mockReturnValueOnce(c);
+
+    expect(await getIgMessages(CONTACT, 5)).toEqual([]);
+    expect(c.limit).toHaveBeenCalledWith(5);
+  });
+});
+
+describe("InstagramMessages: findIgMessageByMid", () => {
+  it("возвращает true, если сообщение с таким mid уже сохранено", async () => {
+    messages.findOne.mockResolvedValueOnce({ _id: new ObjectId("65f0c0ffee0000000000000c") });
+
+    expect(await findIgMessageByMid("test-mid-1")).toBe(true);
+    expect(messages.findOne).toHaveBeenCalledWith({ mid: "test-mid-1" });
+  });
+
+  it("возвращает false, если такого mid нет", async () => {
+    messages.findOne.mockResolvedValueOnce(null);
+
+    expect(await findIgMessageByMid("test-mid-unknown")).toBe(false);
+  });
+});
+
+describe("InstagramMessages: countIgAiMessagesSince", () => {
+  it("считает ответы ИИ этого собеседника с указанного момента", async () => {
+    messages.countDocuments.mockResolvedValueOnce(3);
+
+    expect(await countIgAiMessagesSince(CONTACT, ago(DAY_MS))).toBe(3);
+    expect(messages.countDocuments).toHaveBeenCalledWith({
+      igUserId: CONTACT,
+      from: "ai",
+      at: { $gte: ago(DAY_MS) },
+    });
   });
 });
