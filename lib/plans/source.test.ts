@@ -1,7 +1,7 @@
 import JSZip from "jszip";
 import mammoth from "mammoth";
 import { makeDocx } from "./docx-test-utils";
-import { docxToText, findContacts, htmlToPlainText, prepareSource, sha256Hex, stripContacts } from "./source";
+import { docxToText, dropTourSentences, findContacts, htmlToPlainText, prepareSource, sha256Hex, stripContacts } from "./source";
 
 describe("prepareSource", () => {
   it("drops links, e-mails, phones and tour lines but keeps money and counts", () => {
@@ -14,6 +14,30 @@ describe("prepareSource", () => {
     ].join("\n"));
     expect(out).not.toMatch(/https?:|pin\.it|@example|98765|visual tour/i);
     for (const kept of ["USD 6800", "USD 2000-2500", "10 sessions"]) expect(out).toContain(kept);
+  });
+
+  // Регрессия: «Click on the link» стоит в конце абзаца про госпиталь и в конце строки с врачом. Раньше такая
+  // строка удалялась целиком, и вместе с ней пропадали название, описание и имя врача.
+  it("removes only the link-invitation sentence and keeps hospital descriptions and doctors", () => {
+    const out = prepareSource([
+      "We recommend the following Hospitals and Doctors:",
+      "1. Sample Hospital is a 600-bed hospital in Faridabad, Haryana. It has 40 operation theatres. Click on the link: https://example.org/a",
+      "Dr. Anna Example will be the treating doctor. Kindly find her profile via link - https://example.org/dr-a",
+      "2. Placeholder Centre offers surgical care in 15 specialties. To know more about the Hospital, kindly click on the link - https://example.org/b",
+      "Dr. (Maj Gen) Ravi Demo will be the treating doctor. To know more click on the link- https://example.org/dr-b",
+      "Kindly have a visual tour of the hospital via link - https://pin.it/abc123",
+    ].join("\n"));
+    expect(out).toContain("1. Sample Hospital is a 600-bed hospital in Faridabad, Haryana. It has 40 operation theatres.");
+    expect(out).toContain("Dr. Anna Example will be the treating doctor.");
+    expect(out).toContain("2. Placeholder Centre offers surgical care in 15 specialties.");
+    expect(out).toContain("Dr. (Maj Gen) Ravi Demo will be the treating doctor.");
+    expect(out).not.toMatch(/click on|via link|visual tour|profile via|To know more/i);
+    expect(out.split("\n")).toHaveLength(5); // строка, целиком состоявшая из рекламы, исчезла
+  });
+
+  it("dropTourSentences leaves ordinary lines alone", () => {
+    expect(dropTourSentences("Dr. Meera Sample will be the treating doctor.")).toBe("Dr. Meera Sample will be the treating doctor.");
+    expect(dropTourSentences("Click on the link:")).toBe("");
   });
 
   it("limits the raw length and rejects an almost empty letter", () => {

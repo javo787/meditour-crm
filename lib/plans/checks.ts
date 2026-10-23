@@ -96,6 +96,60 @@ function senderNamesFromEnv(): string[] {
   return (process.env.PLAN_SENDER_NAMES ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+// Врачи, названные в письме фразой «… will be the treating doctor», в порядке письма. Так HBG пишет врача
+// отдельной строкой под описанием каждого госпиталя; если такой фразы в письме нет, проверка молчит.
+const TREATING_DOCTOR = /(Dr\.?\s+[^\n]{2,80}?)\s*[-–—]?\s*will be the treating doctor/i;
+
+export function treatingDoctorsInLetter(source: string): string[] {
+  return source
+    .split("\n")
+    .map((line) => TREATING_DOCTOR.exec(line)?.[1].replace(/\s+/g, " ").trim())
+    .filter((name): name is string => name !== undefined);
+}
+
+// Все слова имени врача из письма (без «Dr», званий и скобок) есть в тексте поля doctor в плане.
+function doctorMatches(planDoctor: string, letterDoctor: string): boolean {
+  const words = letterDoctor
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/[^\p{L}\s]/gu, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !/^(?:dr|prof|maj|gen)$/i.test(w));
+  const hay = normalize(planDoctor);
+  return words.length > 0 && words.every((w) => hay.includes(w.toLowerCase()));
+}
+
+// Слова названия клиники, по которым её узнают в письме («Amrita», «BLK»); общие слова не годятся.
+const GENERIC_CLINIC_WORDS = /^(?:hospitals?|super|special(?:ty|ity)|medical|cent(?:re|er)|institute|international|health(?:care)?|clinic)$/i;
+function clinicKeys(clinic: { name: string; shortName: string }): string[] {
+  const words = `${clinic.shortName} ${clinic.name}`
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter((w) => w.length >= 3 && !GENERIC_CLINIC_WORDS.test(w));
+  return [...new Set(words.map((w) => w.toLowerCase()))];
+}
+
+// Для каждого врача из письма — клиника, чьё описание стоит прямо над его строкой (порядок клиник в плане
+// не важен: ищем по названию). Врач без найденной клиники возвращается с index = -1.
+function letterDoctorsWithClinic(source: string, clinics: { name: string; shortName: string }[]) {
+  const lines = source.split("\n");
+  const keys = clinics.map(clinicKeys);
+  const result: { name: string; index: number }[] = [];
+  lines.forEach((line, lineNo) => {
+    const name = TREATING_DOCTOR.exec(line)?.[1].replace(/\s+/g, " ").trim();
+    if (name === undefined) return;
+    // Идём вверх до первой строки с названием клиники из плана. Строка другого врача — граница: за ней уже
+    // описание другого госпиталя (возможно, его нет в плане), приписывать врача этой клинике нельзя.
+    let index = -1;
+    for (let i = lineNo - 1; i >= 0 && index < 0; i--) {
+      if (TREATING_DOCTOR.test(lines[i])) break;
+      const hay = normalize(lines[i]);
+      index = keys.findIndex((k) => k.some((w) => hay.includes(w)));
+    }
+    result.push({ name, index });
+  });
+  return result;
+}
+
 // Дни от одной ISO-даты до другой (даты без времени, UTC).
 const daysBetween = (fromIso: string, toIso: string) => (Date.parse(toIso) - Date.parse(fromIso)) / 86_400_000;
 
@@ -164,6 +218,25 @@ export function runPlanChecks(input: PlanCheckInput): PlanWarning[] {
     for (const field of ["doctor", "name"] as const) {
       const missing = (clinic[field].match(/[A-Za-z]{4,}/g) ?? []).find((w) => !normalizedSource.includes(w.toLowerCase()));
       if (missing !== undefined) push("doctor-not-in-letter", "warn", `«${missing}» нет в письме — проверьте по сайту клиники`, `${path}.${field}`);
+    }
+  }
+  // Врачи из письма и врачи в плане: у каждой клиники должен стоять тот врач, чья строка идёт под её описанием.
+  // Так ловится «чужой» врач у клиники и пустое поле, когда врач в письме назван.
+  for (const { name: letterDoctor, index } of letterDoctorsWithClinic(source, content.clinics)) {
+    if (index >= 0) {
+      const { clinic, path } = clinics[index];
+      if (doctorMatches(clinic.doctor, letterDoctor)) continue;
+      const label = clinic.shortName || clinic.name;
+      push(
+        "clinic-doctor-mismatch",
+        "warn",
+        clinic.doctor.trim() === ""
+          ? `У клиники «${label}» не указан врач, а в письме назван «${letterDoctor}»`
+          : `У клиники «${label}» в плане врач «${clinic.doctor}», а в письме — «${letterDoctor}»`,
+        `${path}.doctor`,
+      );
+    } else if (!clinics.some(({ clinic }) => doctorMatches(clinic.doctor, letterDoctor))) {
+      push("letter-doctor-missing", "warn", `В письме назван врач «${letterDoctor}», а в плане его нет`);
     }
   }
   if (content.clinics.length > 0 && !options.clinicsVerifiedOnSites) {
