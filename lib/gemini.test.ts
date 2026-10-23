@@ -303,6 +303,50 @@ describe("askGemini: контекст переписки", () => {
   });
 });
 
+// Канальная подсказка (Instagram Direct): вместо приглашения на звонок модели
+// передаётся служебная заметка о канале, и она первая среди подсказок.
+describe("askGemini: канальная подсказка", () => {
+  const CHANNEL = "Канал: Instagram Direct (не WhatsApp). Тестовая подсказка канала.";
+
+  it("channelHint дописывается к последнему сообщению пациента первой из подсказок", async () => {
+    const calls = mockGemini([{ text: json(["Салом."], false, "tg") }]);
+    const { askGemini } = await load();
+
+    await askGemini({
+      history: [msgAt("ai", "Жду документы.", "2026-10-02T10:00:00Z")],
+      items,
+      now: NOW_CTX,
+      channelHint: CHANNEL,
+    });
+
+    const texts = lastTurnTexts(calls[0]);
+    expect(texts).toHaveLength(3);
+    expect(texts[0]).toBe(items[0].text);
+    expect(texts[1]).toBe(CHANNEL);
+    expect(texts[2]).toContain("после паузы");
+  });
+
+  it("в рабочее окно channelHint заменяет подсказку про звонок", async () => {
+    const calls = mockGemini([{ text: json(["Салом."], false, "tg") }]);
+    const { askGemini } = await load();
+
+    await askGemini({ history: [], items, now: IN_WINDOW, channelHint: CHANNEL });
+
+    const texts = lastTurnTexts(calls[0]);
+    expect(texts).toEqual([items[0].text, CHANNEL]);
+    expect(texts.some((t) => t.includes("созвониться"))).toBe(false);
+  });
+
+  it("без channelHint в рабочее окно подсказка про звонок на месте (регрессия)", async () => {
+    const calls = mockGemini([{ text: json(["Салом."], false, "tg") }]);
+    const { askGemini } = await load();
+
+    await askGemini({ history: [], items, now: IN_WINDOW });
+
+    expect(lastTurnTexts(calls[0]).some((t) => t.includes("созвониться"))).toBe(true);
+  });
+});
+
 
 // Режим keepGenerationConfig (раздел «Планы»): ответ обязан быть JSON, поэтому запрос без generationConfig
 // не отправляется никогда; схему снимает только 400, и только на той же модели.

@@ -34,7 +34,24 @@ describe("getInstagramConfig", () => {
       dmCooldownMs: 12 * HOUR_MS,
       commentCooldownMs: 6 * HOUR_MS,
       replyDelay: true,
+      aiReplies: true,
+      aiDailyLimit: 30,
     });
+  });
+
+  it("ответы ИИ в Direct включены по умолчанию и выключаются значением off без учёта регистра", () => {
+    expect(getInstagramConfig({}).aiReplies).toBe(true);
+    expect(getInstagramConfig({ INSTAGRAM_AI_REPLIES: "" }).aiReplies).toBe(true);
+    expect(getInstagramConfig({ INSTAGRAM_AI_REPLIES: "on" }).aiReplies).toBe(true);
+    expect(getInstagramConfig({ INSTAGRAM_AI_REPLIES: "off" }).aiReplies).toBe(false);
+    expect(getInstagramConfig({ INSTAGRAM_AI_REPLIES: "OFF" }).aiReplies).toBe(false);
+  });
+
+  it("дневной лимит ответов ИИ читается как положительное целое, иначе 30", () => {
+    expect(getInstagramConfig({ INSTAGRAM_AI_DAILY_LIMIT: "5" }).aiDailyLimit).toBe(5);
+    for (const bad of ["abc", "0", "-3", "2.5", "", "   ", "Infinity"]) {
+      expect(getInstagramConfig({ INSTAGRAM_AI_DAILY_LIMIT: bad }).aiDailyLimit).toBe(30);
+    }
   });
 
   it("читает токены и версию Graph API из окружения", () => {

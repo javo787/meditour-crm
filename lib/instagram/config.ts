@@ -12,12 +12,15 @@ export interface InstagramConfig {
   dmCooldownMs: number;
   commentCooldownMs: number;
   replyDelay: boolean;
+  aiReplies: boolean; // ответы ИИ в Direct (INSTAGRAM_AI_REPLIES=off выключает)
+  aiDailyLimit: number; // потолок ответов ИИ за сутки (INSTAGRAM_AI_DAILY_LIMIT)
 }
 
 const DEFAULT_GRAPH_VERSION = "v23.0";
 const DEFAULT_WHATSAPP_NUMBER = "+992005507777";
 const DEFAULT_DM_COOLDOWN_HOURS = 12;
 const DEFAULT_COMMENT_COOLDOWN_HOURS = 6;
+const DEFAULT_AI_DAILY_LIMIT = 30;
 const HOUR_MS = 60 * 60 * 1000;
 
 // Номер для людей и для ссылки wa.me. Для 12-значного номера с кодом 992
@@ -39,6 +42,13 @@ function hoursToMs(raw: string | undefined, fallbackHours: number): number {
   return Number.isFinite(hours) && hours > 0 ? hours * HOUR_MS : fallbackHours * HOUR_MS;
 }
 
+// Целое число больше нуля из окружения. Иначе — значение по умолчанию.
+function positiveInt(raw: string | undefined, fallback: number): number {
+  const trimmed = (raw ?? "").trim();
+  const n = trimmed === "" ? NaN : Number(trimmed);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
 export function getInstagramConfig(env: Record<string, string | undefined> = process.env): InstagramConfig {
   const whatsappRaw = (env.INSTAGRAM_WHATSAPP_NUMBER ?? "").trim() || DEFAULT_WHATSAPP_NUMBER;
   let whatsapp = formatWhatsAppNumber(whatsappRaw);
@@ -56,5 +66,7 @@ export function getInstagramConfig(env: Record<string, string | undefined> = pro
     dmCooldownMs: hoursToMs(env.INSTAGRAM_DM_COOLDOWN_HOURS, DEFAULT_DM_COOLDOWN_HOURS),
     commentCooldownMs: hoursToMs(env.INSTAGRAM_COMMENT_COOLDOWN_HOURS, DEFAULT_COMMENT_COOLDOWN_HOURS),
     replyDelay: (env.INSTAGRAM_REPLY_DELAY ?? "").trim().toLowerCase() !== "off",
+    aiReplies: (env.INSTAGRAM_AI_REPLIES ?? "").trim().toLowerCase() !== "off",
+    aiDailyLimit: positiveInt(env.INSTAGRAM_AI_DAILY_LIMIT, DEFAULT_AI_DAILY_LIMIT),
   };
 }

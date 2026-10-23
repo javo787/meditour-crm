@@ -25,8 +25,10 @@ const cfg: InstagramConfig = {
   dmCooldownMs: 12 * HOUR,
   commentCooldownMs: 6 * HOUR,
   replyDelay: true,
+  aiReplies: false,
+  aiDailyLimit: 30,
 };
-const CTX = { whatsappNumber: cfg.whatsappNumber, whatsappDigits: cfg.whatsappDigits };
+const CTX ={ whatsappNumber: cfg.whatsappNumber, whatsappDigits: cfg.whatsappDigits };
 
 type CommentEvent = Extract<InstagramEvent, { type: "comment" }>;
 type DmEvent = Extract<InstagramEvent, { type: "dm" }>;
