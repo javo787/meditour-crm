@@ -79,8 +79,21 @@ export function stripContacts(text: string): string {
     .join("\n");
 }
 
-// Строки про виртуальный тур и переход по ссылке — реклама сайта отправителя, а не медицинский текст.
-const TOUR_LINE = /virtual tour|visual tour|click on the link|via link/i;
+// Приглашения перейти на сайт отправителя и «виртуальный тур» — реклама, а не медицинский текст.
+// В письмах они стоят В КОНЦЕ абзаца про госпиталь или врача («… Click on the link: <url>»), а ссылки к
+// этому моменту уже вырезаны. Поэтому удаляем только такое предложение, а не всю строку: иначе вместе
+// с ним пропадают название госпиталя, его описание и имя врача, и модель путает, чей это врач.
+const TOUR_SENTENCE = /virtual tour|visual tour|click on (?:the )?link|via (?:the )?link/i;
+
+// Оставляет в строке всё, кроме предложений-приглашений. «Dr.» даёт ложную границу предложения, но
+// уцелевшие части склеиваются обратно через пробел, так что текст не портится.
+export function dropTourSentences(line: string): string {
+  if (!TOUR_SENTENCE.test(line)) return line;
+  return line
+    .split(/(?<=[.!?])\s+/)
+    .filter((part) => !TOUR_SENTENCE.test(part))
+    .join(" ");
+}
 
 // Письмо, готовое к отправке модели: без контактов и рекламы, с проверенной длиной.
 export function prepareSource(text: string): string {
@@ -88,7 +101,11 @@ export function prepareSource(text: string): string {
   if (text.length > PLAN_LIMITS.sourceChars) throw new PlanInputError("too-long");
   const cleaned = stripContacts(text.replace(/\r\n/g, "\n"))
     .split("\n")
-    .filter((line) => !TOUR_LINE.test(line))
+    .flatMap((line) => {
+      const kept = dropTourSentences(line);
+      // Строка, целиком состоявшая из рекламы, исчезает; пустые строки письма остаются как были.
+      return kept === "" && line !== "" ? [] : [kept];
+    })
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
