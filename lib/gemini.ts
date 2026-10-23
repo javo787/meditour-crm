@@ -415,6 +415,10 @@ export async function askGemini(params: {
   // Момент обращения пациента — от него зависит, зовём ли мы на звонок
   // (lib/call-window.ts). По умолчанию «сейчас»; параметр нужен тестам.
   now?: Date;
+  // Служебная заметка о канале (например, Instagram Direct). Если задана, она
+  // идёт первой среди подсказок к последнему сообщению пациента, а приглашение
+  // на звонок в рабочее окно не добавляется: в Direct зовут в WhatsApp, не на звонок.
+  channelHint?: string;
 }): Promise<{
   // Готовые к отправке WhatsApp-сообщения (пузыри) по порядку. Пусто только
   // если suppressed задан — тогда отправлять нечего и решает координатор.
@@ -466,7 +470,7 @@ export async function askGemini(params: {
   // Дописывается к последнему сообщению пациента, а не в системный промпт,
   // чтобы не ломать его explicit-кэш (подробности — в lib/call-window.ts).
   const now = params.now ?? new Date();
-  const windowHint = callInviteHint(now);
+  const windowHint = params.channelHint ? undefined : callInviteHint(now);
   // Пациент вернулся после паузы (больше суток с последнего сообщения).
   const returnHint = returnGapHint(params.history[params.history.length - 1]?.at, now);
 
@@ -486,7 +490,7 @@ export async function askGemini(params: {
   const recentAiTexts = params.history.filter((m) => m.from === "ai").map((m) => m.text);
 
   const generate = async (nudge?: string) => {
-    const hints = [returnHint, windowHint, nudge].filter((h): h is string => Boolean(h));
+    const hints = [params.channelHint, returnHint, windowHint, nudge].filter((h): h is string => Boolean(h));
     const { text } = await generateWithFallback(
       hints.length > 0 ? withNudge(contents, hints) : contents,
       MEDITUR_SYSTEM_PROMPT,
