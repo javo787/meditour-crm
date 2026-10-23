@@ -11,7 +11,7 @@ import type { Content, ContentTable, TDocumentDefinitions, TableCell } from "pdf
 import { transliterate } from "@/lib/documents";
 import { ensurePdfFonts } from "@/lib/pdf-fonts";
 
-import { BRAND, DEFAULT_NOT_INCLUDED, UNVERIFIED_CLINICS_NOTE, verifiedClinicsNote } from "./defaults";
+import { BRAND, DEFAULT_NOT_INCLUDED, unverifiedClinicsNote, verifiedClinicsNote } from "./defaults";
 import { clinicLabel, formatAmount, formatDotDate, formatRuDate, genderLabel } from "./format";
 import type {
   PlanClinic,
@@ -193,7 +193,8 @@ function patientStrip(content: PlanContent, options: PlanOptions): Content {
   });
   return {
     table: {
-      widths: ["30%", "12%", "14%", "44%"],
+      // ПОЛ — фиксированные 80 pt: «Женский» жирным 9 pt занимает ≈47 pt вместе с отступами ячейки (проценты давали 63 pt и перенос).
+      widths: ["30%", 80, "14%", "*"],
       body: [
         [
           cell("ПАЦИЕНТ", content.patient.name || "—"),
@@ -249,11 +250,9 @@ function stepsSection(steps: string[]): SectionNode {
   return sectionNode(
     "ЧТО НЕОБХОДИМО СДЕЛАТЬ В ИНДИИ",
     steps.map((step, index): TableCell[] => {
+      // Плашка номера не получает зебру: фон ячейки перекрывает индиго вложенной таблицы; зебра — только у текста.
       const fillColor = index % 2 === 1 ? ZEBRA : undefined;
-      return [
-        { ...numberBadge(String(index + 1).padStart(2, "0")), fillColor },
-        { text: step, margin: [0, 3, 0, 3], fillColor },
-      ];
+      return [numberBadge(String(index + 1).padStart(2, "0")), { text: step, margin: [0, 3, 0, 3], fillColor }];
     }),
     [26, "*"],
   );
@@ -282,23 +281,43 @@ function documentsSection(documents: PlanContent["documents"]): SectionNode | un
 }
 
 // РЕКОМЕНДОВАННЫЕ КЛИНИКИ: тёмная шапка столбцов; под таблицей — примечание о том, откуда сведения.
-const CLINIC_WIDTHS: Widths = [24, 118, 92, 135, "*"];
+// Ширины столбцов клиник по набору столбцов: № и госпиталь с городом фиксированы, остаток отдаётся врачу и «почему».
+function clinicWidths(withDoctors: boolean, withReasons: boolean): Widths {
+  if (withDoctors && withReasons) return [24, 118, 92, 135, "*"];
+  if (withDoctors || withReasons) return [24, 150, 110, "*"];
+  return [24, "*", 130];
+}
+
+// Столбцы «врач» и «почему» печатаются, только если хотя бы у одной клиники в них есть текст (иначе они пусты).
 function clinicsSection(clinics: PlanClinic[], options: PlanOptions): SectionNode | undefined {
   if (clinics.length === 0) return undefined;
+  const withDoctors = clinics.some((clinic) => clinic.doctor.trim() !== "");
+  const withReasons = clinics.some((clinic) => clinic.why.trim() !== "");
+  const widths = clinicWidths(withDoctors, withReasons);
+  const headers: Array<[string, Align?]> = [["№"], ["ГОСПИТАЛЬ"], ["ГОРОД"]];
+  if (withDoctors) headers.push(["РЕКОМЕНДУЕМЫЙ СПЕЦИАЛИСТ"]);
+  if (withReasons) headers.push(["ПОЧЕМУ РАССМАТРИВАЕТСЯ"]);
   const rows: TableCell[][] = clinics.map((clinic, index): TableCell[] => {
     const fillColor = index % 2 === 1 ? ZEBRA : undefined;
-    return [
+    const cells: TableCell[] = [
       { text: String(index + 1), color: CAPTION, fillColor },
       { text: clinic.name, bold: true, color: INDIGO, fillColor },
       { text: clinic.area.trim() === "" ? clinic.city : `${clinic.city} (${clinic.area})`, fillColor },
-      { text: clinic.doctor, fillColor },
-      { text: clinic.why, fillColor },
     ];
+    if (withDoctors) cells.push({ text: clinic.doctor, fillColor });
+    if (withReasons) cells.push({ text: clinic.why, fillColor });
+    return cells;
   });
-  const note = options.clinicsVerifiedOnSites ? verifiedClinicsNote(options.clinicsVerifiedMonth) : UNVERIFIED_CLINICS_NOTE;
-  rows.push([{ text: note, italics: true, color: MUTED, fontSize: 7.5, colSpan: 5, margin: [0, 4, 0, 0] }, {}, {}, {}, {}]);
-  return sectionNode("РЕКОМЕНДОВАННЫЕ КЛИНИКИ", rows, CLINIC_WIDTHS, {
-    columnHeader: columnHeader([["№"], ["ГОСПИТАЛЬ"], ["ГОРОД"], ["РЕКОМЕНДУЕМЫЙ СПЕЦИАЛИСТ"], ["ПОЧЕМУ РАССМАТРИВАЕТСЯ"]]),
+  const span = widths.length;
+  const note = options.clinicsVerifiedOnSites
+    ? verifiedClinicsNote(options.clinicsVerifiedMonth, withDoctors)
+    : unverifiedClinicsNote(withDoctors);
+  rows.push([
+    { text: note, italics: true, color: MUTED, fontSize: 7.5, colSpan: span, margin: [0, 4, 0, 0] },
+    ...Array.from({ length: span - 1 }, (): TableCell => ({})),
+  ]);
+  return sectionNode("РЕКОМЕНДОВАННЫЕ КЛИНИКИ", rows, widths, {
+    columnHeader: columnHeader(headers),
     layout: GRID_LAYOUT,
   });
 }
@@ -554,18 +573,24 @@ export function buildPlanDefinition({ content, options, status }: PlanPdfInput):
       : {
           watermark: { text: "ЧЕРНОВИК", font: "DejaVu", bold: true, fontSize: 110, color: "#9da3b0", opacity: 0.25, angle: -35 },
         }),
+    // Над строкой подвала — тонкая светлая линия во всю ширину текста, как в формуляре.
     footer: (currentPage: number, pageCount: number): Content => ({
-      columns: [
-        { text: BRAND.footer, fontSize: 7, color: FOOTER, width: "*" },
+      stack: [
+        { canvas: [{ type: "line", x1: 0, y1: 0, x2: CONTENT_WIDTH, y2: 0, lineWidth: 0.5, lineColor: LINE }], margin: [34, 0, 34, 4] },
         {
-          text: options.showPageNumbers ? `стр. ${currentPage} из ${pageCount}` : "",
-          fontSize: 7,
-          color: CAPTION,
-          alignment: "right",
-          width: "auto",
+          columns: [
+            { text: BRAND.footer, fontSize: 7, color: FOOTER, width: "*" },
+            {
+              text: options.showPageNumbers ? `стр. ${currentPage} из ${pageCount}` : "",
+              fontSize: 7,
+              color: CAPTION,
+              alignment: "right",
+              width: "auto",
+            },
+          ],
+          margin: [34, 0, 34, 0],
         },
       ],
-      margin: [34, 0, 34, 0],
     }),
     content: body,
   };

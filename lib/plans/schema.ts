@@ -481,7 +481,7 @@ export const PLAN_RESPONSE_SCHEMA = gObj({
                     `The id from clinics of the hospital this price belongs to; empty string when the price is not tied to one hospital. At most ${MAX.clinicId} characters.`,
                   ),
                   amount: gStr(
-                    `The amount exactly as the letter writes it, for example «6800», «500-800» or «80-90 per visit», or «по запросу» when the letter says the price is on request. Never recalculate, add up or convert. The currency is USD, so no currency name is needed. At most ${MAX.amount} characters.`,
+                    `The amount as the letter writes it, for example «6800», «500-800» or «80-90 за визит», or «по запросу» when the letter says the price is on request. A per-unit suffix must be in Russian («в день», «за визит», «за ночь», «за сеанс», «в неделю»). Never recalculate, add up or convert. The currency is USD, so no currency name is needed. At most ${MAX.amount} characters.`,
                   ),
                   evidence: gStr(
                     `A verbatim quotation from the letter, copied character for character from one line, that contains this price. At most ${PLAN_LIMITS.evidence} characters.`,

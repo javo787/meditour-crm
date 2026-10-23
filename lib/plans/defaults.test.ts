@@ -1,4 +1,4 @@
-import { BRAND, defaultFixed, newPlanContent, newPlanOptions, verifiedClinicsNote } from "./defaults";
+import { BRAND, defaultFixed, newPlanContent, newPlanOptions, unverifiedClinicsNote, verifiedClinicsNote } from "./defaults";
 import { planContentSchema, planDraftSchema } from "./schema";
 import { FICTIONAL_LETTER, fictionalContent, fictionalDraft, fullContent } from "./test-fixtures";
 
@@ -47,8 +47,25 @@ describe("options, notes and brand", () => {
     expect(newPlanOptions(new Date("2026-10-08T20:30:00Z")).date).toBe("2026-10-09");
   });
 
-  it("verifiedClinicsNote names the verification month", () => {
-    expect(verifiedClinicsNote("2026-09")).toContain("официальных сайтах клиник (сентябрь 2026 г.)");
+  it("verifiedClinicsNote names the verification month and speaks of doctors only when the table has them", () => {
+    expect(verifiedClinicsNote("2026-09", true)).toContain(
+      "Врачи и госпитали указаны по итогам проверки актуальной информации на официальных сайтах клиник (сентябрь 2026 г.)",
+    );
+    expect(verifiedClinicsNote("2026-09", false)).toContain(
+      "Госпитали указаны по итогам проверки актуальной информации на официальных сайтах клиник (сентябрь 2026 г.)",
+    );
+    expect(verifiedClinicsNote("2026-09", false)).not.toContain("Врачи");
+    for (const hasDoctors of [true, false]) {
+      expect(verifiedClinicsNote("2026-09", hasDoctors)).toContain(
+        "Итоговое медицинское заключение и состав лечащей команды определяются госпиталем после очной оценки пациента.",
+      );
+    }
+  });
+
+  it("unverifiedClinicsNote speaks of doctors only when the table has them", () => {
+    expect(unverifiedClinicsNote(true)).toContain("Врачи и госпитали указаны по информации принимающей стороны.");
+    expect(unverifiedClinicsNote(false)).toContain("Госпитали указаны по информации принимающей стороны.");
+    expect(unverifiedClinicsNote(false)).not.toContain("Врачи");
   });
 
   it("the brand footer keeps the confirmed phone number", () => {

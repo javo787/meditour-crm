@@ -11,7 +11,11 @@ import { fictionalContent, fullContent } from "./test-fixtures";
 
 // fontkit — зависимость pdfkit, типов у неё нет: подключаем через require, как в lib/pdf-fonts.test.ts.
 const fontkit = require("fontkit") as {
-  openSync(file: string): { hasGlyphForCodePoint(codePoint: number): boolean };
+  openSync(file: string): {
+    hasGlyphForCodePoint(codePoint: number): boolean;
+    layout(text: string): { advanceWidth: number };
+    unitsPerEm: number;
+  };
 };
 
 const NOW = new Date("2026-10-09T05:00:00Z");
@@ -30,16 +34,57 @@ function walk(node: unknown, visit: (obj: Record<string, unknown>) => void): voi
   }
 }
 
-type SectionNode = { sectionTitle: string; table: { headerRows?: number; keepWithHeaderRows?: number } };
+// Таблица узла: ширины и строки ячеек (проверяем форму таблицы, не только текст).
+type TableNode = {
+  widths: Array<number | string>;
+  body: Array<Array<Record<string, unknown>>>;
+  headerRows?: number;
+  keepWithHeaderRows?: number;
+};
 
-// Узлы разделов (с полем sectionTitle), по порядку.
-function sectionNodes(def: TDocumentDefinitions): SectionNode[] {
-  const nodes: SectionNode[] = [];
+// Узлы разделов (с полем sectionTitle), по порядку; table — сама таблица раздела.
+function sectionNodes(def: TDocumentDefinitions): Array<{ sectionTitle: string; table: TableNode }> {
+  const nodes: Array<{ sectionTitle: string; table: TableNode }> = [];
   walk(def.content, (obj) => {
-    if (typeof obj.sectionTitle === "string") nodes.push(obj as unknown as SectionNode);
+    if (typeof obj.sectionTitle === "string") nodes.push({ sectionTitle: obj.sectionTitle, table: obj.table as TableNode });
   });
   return nodes;
 }
+
+// Таблица раздела по его заголовку.
+function sectionTable(def: TDocumentDefinitions, title: string): TableNode {
+  const node = sectionNodes(def).find((item) => item.sectionTitle === title);
+  if (!node) throw new Error(`раздел «${title}» не найден`);
+  return node.table;
+}
+
+// Таблица полосы пациента: единственная, в ячейках которой есть подпись «ПОЛ».
+function patientStripTable(def: TDocumentDefinitions): TableNode {
+  const tables: TableNode[] = [];
+  walk(def.content, (obj) => {
+    const table = obj.table as TableNode | undefined;
+    if (table && JSON.stringify(table.body).includes('"ПОЛ"')) tables.push(table);
+  });
+  return tables[0];
+}
+
+// Подписи столбцов: строка шапки столбцов идёт сразу за строкой заголовка раздела.
+const headerLabels = (table: TableNode): unknown[] => table.body[1].map((cell) => cell.text);
+
+const TEXT_WIDTH = 527; // ширина текста A4 при полях 34 pt
+const NAVY = "#21268c";
+const ZEBRA = "#f7f9fc";
+
+// Ширины в pt: проценты — от TEXT_WIDTH, «*» — остаток (он один), числа — как есть.
+function resolveWidths(widths: Array<number | string>): number[] {
+  const known = widths.map((w) => (typeof w === "number" ? w : w.endsWith("%") ? (parseFloat(w) / 100) * TEXT_WIDTH : NaN));
+  const used = known.reduce((sum, w) => (Number.isNaN(w) ? sum : sum + w), 0);
+  return known.map((w) => (Number.isNaN(w) ? TEXT_WIDTH - used : w));
+}
+
+// Ширина строки жирным шрифтом DejaVu Sans Bold при размере size (pt).
+const boldFont = fontkit.openSync(path.join(DEJAVU_DIR, "DejaVuSans-Bold.ttf"));
+const boldWidth = (text: string, size: number): number => (boldFont.layout(text).advanceWidth * size) / boldFont.unitsPerEm;
 
 // Все строки text из def.content, склеенные пробелом.
 function allText(def: TDocumentDefinitions): string {
@@ -226,4 +271,88 @@ it("extreme plans still build: 30 clinics with long cells, an empty plan, a full
   expect((pdf.toString("latin1").match(/\/Type\s*\/Page[^s]/g) ?? []).length).toBeGreaterThanOrEqual(3);
   expect((await buildPlanPdf(input({ content: newPlanContent() }))).subarray(0, 4).toString()).toBe("%PDF");
   expect((await buildPlanPdf(input({ content: fullContent() }))).subarray(0, 4).toString()).toBe("%PDF");
+});
+
+it("the gender column fits «Женский» and «Мужской» on one line and the profile column stays readable", () => {
+  const widths = resolveWidths(patientStripTable(buildPlanDefinition(input())).widths);
+  // ячейка полосы пациента: отступы по 8 pt с каждой стороны
+  for (const label of ["Женский", "Мужской"]) expect(boldWidth(label, 9) + 16).toBeLessThanOrEqual(widths[1]);
+  expect(boldWidth("Урология (камни в почках)", 9) + 16).toBeLessThanOrEqual(widths[3]);
+  expect(widths[3]).toBeGreaterThanOrEqual(180);
+});
+
+it("every step number keeps its navy chip on zebra rows; the zebra tint covers only the text cell", () => {
+  const content = fictionalContent();
+  content.indiaSteps.push("Наблюдение после процедуры и контрольное КТ");
+  const rows = sectionTable(buildPlanDefinition(input({ content })), "ЧТО НЕОБХОДИМО СДЕЛАТЬ В ИНДИИ").body.slice(1);
+  expect(rows).toHaveLength(4);
+  rows.forEach(([chip, text], index) => {
+    expect(chip.fillColor).not.toBe(ZEBRA);
+    expect(JSON.stringify(chip)).toContain(`"fillColor":"${NAVY}"`);
+    expect(JSON.stringify(chip)).toContain('"color":"#ffffff"');
+    expect(text.fillColor).toBe(index % 2 === 1 ? ZEBRA : undefined);
+  });
+});
+
+it("the clinics table prints the doctor and reason columns when some clinic has them", () => {
+  const table = sectionTable(buildPlanDefinition(input()), "РЕКОМЕНДОВАННЫЕ КЛИНИКИ");
+  expect(headerLabels(table)).toEqual(["№", "ГОСПИТАЛЬ", "ГОРОД", "РЕКОМЕНДУЕМЫЙ СПЕЦИАЛИСТ", "ПОЧЕМУ РАССМАТРИВАЕТСЯ"]);
+  expect(table.widths).toHaveLength(5);
+});
+
+it("the doctor column is dropped only when no clinic has a doctor", () => {
+  const none = fictionalContent();
+  for (const clinic of none.clinics) clinic.doctor = "";
+  const noneTable = sectionTable(buildPlanDefinition(input({ content: none })), "РЕКОМЕНДОВАННЫЕ КЛИНИКИ");
+  expect(headerLabels(noneTable)).toEqual(["№", "ГОСПИТАЛЬ", "ГОРОД", "ПОЧЕМУ РАССМАТРИВАЕТСЯ"]);
+  for (const row of noneTable.body) expect(row).toHaveLength(noneTable.widths.length);
+  expect(allText(buildPlanDefinition(input({ content: none })))).not.toContain("РЕКОМЕНДУЕМЫЙ СПЕЦИАЛИСТ");
+
+  // у одной клиники врач есть — столбец печатается
+  const one = fictionalContent();
+  for (const clinic of one.clinics.slice(1)) clinic.doctor = "";
+  expect(headerLabels(sectionTable(buildPlanDefinition(input({ content: one })), "РЕКОМЕНДОВАННЫЕ КЛИНИКИ"))).toContain(
+    "РЕКОМЕНДУЕМЫЙ СПЕЦИАЛИСТ",
+  );
+});
+
+it("the reason column is dropped only when no clinic has a reason", () => {
+  const none = fictionalContent();
+  for (const clinic of none.clinics) clinic.why = "";
+  const table = sectionTable(buildPlanDefinition(input({ content: none })), "РЕКОМЕНДОВАННЫЕ КЛИНИКИ");
+  expect(headerLabels(table)).toEqual(["№", "ГОСПИТАЛЬ", "ГОРОД", "РЕКОМЕНДУЕМЫЙ СПЕЦИАЛИСТ"]);
+  for (const row of table.body) expect(row).toHaveLength(table.widths.length);
+  expect(allText(buildPlanDefinition(input({ content: none })))).not.toContain("ПОЧЕМУ РАССМАТРИВАЕТСЯ");
+});
+
+it("with neither doctors nor reasons the clinics table keeps №, госпиталь and город, one cell per column in every row", () => {
+  const content = fictionalContent();
+  for (const clinic of content.clinics) {
+    clinic.doctor = "";
+    clinic.why = "";
+  }
+  const table = sectionTable(buildPlanDefinition(input({ content })), "РЕКОМЕНДОВАННЫЕ КЛИНИКИ");
+  expect(headerLabels(table)).toEqual(["№", "ГОСПИТАЛЬ", "ГОРОД"]);
+  expect(table.widths).toHaveLength(3);
+  for (const row of table.body) expect(row).toHaveLength(3);
+  expect(allText(buildPlanDefinition(input({ content })))).toContain("Фаридабад (Дели NCR)");
+});
+
+it("the clinics note does not promise doctors when no clinic has one", () => {
+  const content = fictionalContent();
+  for (const clinic of content.clinics) clinic.doctor = "";
+  const verified = { ...newPlanOptions(NOW), clinicsVerifiedOnSites: true, clinicsVerifiedMonth: "2026-09" };
+  const text = allText(buildPlanDefinition(input({ content, options: verified })));
+  expect(text).toContain("Госпитали указаны по итогам проверки актуальной информации на официальных сайтах клиник (сентябрь 2026 г.)");
+  expect(text).not.toContain("Врачи и госпитали");
+  const unverified = allText(buildPlanDefinition(input({ content })));
+  expect(unverified).toContain("Госпитали указаны по информации принимающей стороны.");
+  expect(unverified).not.toContain("Врачи и госпитали");
+});
+
+it("the footer draws a thin light rule across the content width above the contact line", () => {
+  const footer = buildPlanDefinition(input()).footer as (page: number, pages: number) => unknown;
+  const stack = (footer(2, 5) as { stack: Array<Record<string, unknown>> }).stack;
+  expect(stack[0].canvas).toEqual([{ type: "line", x1: 0, y1: 0, x2: TEXT_WIDTH, y2: 0, lineWidth: 0.5, lineColor: "#d6d9f0" }]);
+  expect(JSON.stringify(stack[1])).toContain("MEDITUR HBG");
 });

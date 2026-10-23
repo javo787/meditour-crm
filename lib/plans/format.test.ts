@@ -23,6 +23,16 @@ it.each([
   expect(formatAmount(out)).toBe(out);
 });
 
+// Английские приписки «per day» и т. п. переводятся; в суммах без них ничего не меняется.
+it.each([
+  ["35-50 per day", "35 – 50 в день"], ["USD 35 a day", "35 в день"], ["USD 40 daily", "40 в день"], ["USD 25/day", "25 в день"],
+  ["USD 80-90 per visit", "80 – 90 за визит"], ["USD 120 per night", "120 за ночь"], ["USD 40 per session", "40 за сеанс"],
+  ["USD 300 per week", "300 в неделю"], ["USD 6800 PER NIGHT", `6${NB}800 за ночь`], ["3 days", "3 days"],
+])("formatAmount translates the English per-unit suffix: %j → %j and is idempotent", (raw, out) => {
+  expect(formatAmount(raw)).toBe(out);
+  expect(formatAmount(out)).toBe(out);
+});
+
 it("amountNumbers collapses thousands separators", () => {
   expect(amountNumbers(`6${NB}800, 6,800 and 6800`)).toEqual([6800, 6800, 6800]);
 });
