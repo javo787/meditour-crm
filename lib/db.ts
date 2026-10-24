@@ -62,6 +62,7 @@ interface MessageDoc {
   at: string;
   media?: { kind: "image" | "audio"; mimeType: string };
   deliveryFailed?: boolean;
+  transcript?: import("./types").MessageTranscript;
   // Идентификатор сообщения в WhatsApp (key.id). Есть у сообщений, которые
   // мы сопоставили с событием из вебхука: так эхо и повторные доставки не
   // превращаются в дубли.
@@ -162,6 +163,7 @@ function toMessage(doc: MessageDoc): ChatMessage {
     at: doc.at,
     media: doc.media,
     deliveryFailed: doc.deliveryFailed,
+    transcript: doc.transcript,
   };
 }
 
@@ -1092,4 +1094,67 @@ export async function failDocument(docId: string, error: string, attempts: numbe
     { _id: new ObjectId(docId) },
     { $set: { status: final ? "failed" : "pending", error: error.slice(0, 300) }, $unset: { startedAt: "" } }
   );
+}
+
+
+// ───────────────────────── Транскрипты голосовых ─────────────────────────
+
+export async function setAiTranscript(
+  messageId: string,
+  { text, model }: { text: string; model: string }
+): Promise<void> {
+  const col = await messagesCollection();
+  await col.updateOne(
+    {
+      _id: new ObjectId(messageId),
+      "transcript.source": { $ne: "coordinator" },
+    },
+    {
+      $set: {
+        transcript: {
+          text,
+          source: "ai",
+          model,
+          at: new Date().toISOString(),
+        },
+      },
+    }
+  );
+}
+
+export async function setCoordinatorTranscript(messageId: string, text: string): Promise<void> {
+  const col = await messagesCollection();
+  await col.updateOne(
+    { _id: new ObjectId(messageId) },
+    {
+      $set: {
+        transcript: {
+          text,
+          source: "coordinator",
+          at: new Date().toISOString(),
+        },
+      },
+    }
+  );
+}
+
+export async function getAudioMessagesWithoutTranscript(leadId: string, limit: number): Promise<ChatMessage[]> {
+  const col = await messagesCollection();
+  const docs = await col
+    .find({
+      leadId: new ObjectId(leadId),
+      "media.kind": "audio",
+      transcript: { $exists: false },
+    })
+    .sort({ at: -1 })
+    .limit(limit)
+    .toArray();
+  return docs.map(toMessage);
+}
+
+export async function getMessageById(messageId: string): Promise<ChatMessage | null> {
+  if (!ObjectId.isValid(messageId)) return null;
+  const col = await messagesCollection();
+  const doc = await col.findOne({ _id: new ObjectId(messageId) });
+  return doc ? toMessage(doc) : null;
 }

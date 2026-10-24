@@ -1,4 +1,5 @@
 import type { ChatMessage } from "@/lib/types";
+import { messageTextForModel } from "./transcripts";
 import { createLogger } from "@/lib/logger";
 import { MEDITUR_SYSTEM_PROMPT } from "@/lib/playbook";
 import { MEDICAL_OPINION_SYSTEM_PROMPT } from "@/lib/medical-opinion-prompt";
@@ -71,8 +72,8 @@ function roleFor(from: ChatMessage["from"]): "user" | "model" {
 // в 12:00» читалось как слова самого пациента. Теперь это служебная пометка в
 // ходе «user» — не от лица пациента и не от лица модели (в её ходах пометок
 // нет, поэтому копировать формат ей не с чего).
-function historyText(m: ChatMessage): string {
-  if (m.from !== "coordinator") return m.text;
+export function historyText(m: ChatMessage): string {
+  if (m.from !== "coordinator") return messageTextForModel(m);
   return `(Служебная пометка, не реплика пациента: координатор Meditur — живой человек — сам написал пациенту: «${m.text}»)`;
 }
 

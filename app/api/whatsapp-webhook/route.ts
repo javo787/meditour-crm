@@ -17,6 +17,7 @@ import {
 import { MAX_DOCUMENT_BYTES, resolveMimeType } from "@/lib/documents";
 import { fetchMediaBase64, markWhatsAppMessagesRead, sendWhatsAppText, type ReadKey } from "@/lib/evolution";
 import { askGemini } from "@/lib/gemini";
+import { startTranscription, waitForTranscript, resolveVoiceItems, TRANSCRIPTION_TIMEOUT_MS } from "@/lib/transcription";
 import { interBubblePauseMs, readDelayMs, typingDelayMs } from "@/lib/humanize";
 import { createLogger, newRequestId, Logger } from "@/lib/logger";
 import { resolveWhatsAppJid } from "@/lib/whatsapp-jid";
@@ -450,6 +451,7 @@ async function processNewMessage(
         base64: audio.base64,
       });
       log.info("9a. голосовое сохранено в MediaAssets", { leadId: lead.id, messageId: savedMessage.id });
+      startTranscription(savedMessage.id, audio);
     }
   } catch (err) {
     log.error("9a. не удалось сохранить медиа в MediaAssets — продолжаем без сохранения копии", {
