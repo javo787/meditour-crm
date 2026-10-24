@@ -262,8 +262,11 @@ async function runAiTurn(senderId: string, key: string, ctx: Ctx): Promise<TurnS
   const contact = await ctx.store.getContact(senderId);
   if (isPaused(contact?.aiPausedUntil, ctx.now())) return { kind: "stop", reason: "paused" };
 
-  // Первое обращение: бот в этом диалоге ещё ничего не писал, поэтому шаблонное приглашение в WhatsApp.
-  if (!history.some((m) => m.from === "ai")) return sendTemplateReply(senderId, run[run.length - 1].text, readAt, ctx);
+  // Первое обращение: бот этому человеку ещё ничего не писал (ни в переписке, ни до появления ИИ-режима, когда
+  // приглашение отмечалось только в контакте), поэтому шаблонное приглашение в WhatsApp. Уже приглашённого человека
+  // не оставляем в молчании на весь cooldown: ему отвечает ИИ.
+  const alreadyInvited = history.some((m) => m.from === "ai") || contact?.lastDmInviteAt !== undefined;
+  if (!alreadyInvited) return sendTemplateReply(senderId, run[run.length - 1].text, readAt, ctx);
 
   const sinceIso = new Date(ctx.now().getTime() - DAY_MS).toISOString();
   if ((await ctx.store.countIgAiMessagesSince(senderId, sinceIso)) >= ctx.cfg.aiDailyLimit) {

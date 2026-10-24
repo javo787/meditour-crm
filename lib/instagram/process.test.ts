@@ -475,13 +475,20 @@ describe("AI mode", () => {
       expect(out).toEqual([{ key: "dm:M1", outcome: "replied" }]);
     });
 
-    it("inside the DM cooldown a first contact gets no invitation, but the message is still stored", async () => {
+    it("a person invited before the AI mode (contact mark, no history) is answered by the model, not left in silence", async () => {
       const h = aiHarness({ contacts: { [USER]: { _id: USER, lastDmInviteAt: hoursAgo(1) } } });
+      h.ai.composeDirectReply.mockResolvedValueOnce({ kind: "reply", bubbles: ["Отвечаю по существу."] });
+      h.graph.sendDirect.mockResolvedValueOnce(sent("S20"));
       const out = await processInstagramEvents([dm()], h.deps);
 
-      expect(h.graph.sendDirect).not.toHaveBeenCalled();
-      expect(h.store.messages).toEqual([seeded("patient", RU_FIRST, NOW_ISO, "M1")]);
-      expect(out).toEqual([{ key: "dm:M1", outcome: "skipped", reason: "cooldown" }]);
+      expect(h.ai.composeDirectReply).toHaveBeenCalledTimes(1);
+      expect(h.ai.composeDirectReply.mock.calls[0][0].items).toEqual([{ text: RU_FIRST }]);
+      expect(sentTexts(h)).toEqual(["Отвечаю по существу."]);
+      expect(h.store.messages).toEqual([
+        seeded("patient", RU_FIRST, NOW_ISO, "M1"),
+        seeded("ai", "Отвечаю по существу.", NOW_ISO, "S20"),
+      ]);
+      expect(out).toEqual([{ key: "dm:M1", outcome: "replied" }]);
     });
 
     it("an attachment-only message is stored as a placeholder and gets the template invitation", async () => {
