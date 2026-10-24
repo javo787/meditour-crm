@@ -37,6 +37,7 @@ const pendingBatches = new Map<string, {
     text: string;
     image?: { base64: string; mimeType: string };
     audio?: { base64: string; mimeType: string };
+    messageId?: string;
     // Ключ входящего сообщения WhatsApp — чтобы отметить его прочитанным
     // прямо перед ответом (см. markWhatsAppMessagesRead).
     readKey?: ReadKey;
@@ -509,6 +510,7 @@ async function processNewMessage(
     text,
     image,
     audio,
+    messageId: savedMessage.id,
     readKey: incomingKey?.id && incomingKey.remoteJid ? { id: incomingKey.id, remoteJid: incomingKey.remoteJid } : undefined,
   });
   batch.timer = setTimeout(() => processBatch(lead.id, phone), BATCH_DEBOUNCE_MS);
@@ -613,6 +615,12 @@ async function processBatchInner(leadId: string, phone: string, log: Logger, req
     return;
   }
 
+  // Resolve voice items before asking Gemini (waiting for transcription)
+  const resolvedItems = await resolveVoiceItems(items, {
+    waitForTranscript,
+    timeoutMs: TRANSCRIPTION_TIMEOUT_MS,
+  });
+
   // 1) Ответ ИИ. Если Gemini не ответил — координатор должен увидеть это в
   // переписке, а не гадать, почему бот молчит.
   let replyMessages: string[];
@@ -631,7 +639,7 @@ async function processBatchInner(leadId: string, phone: string, log: Logger, req
       olderHistoryMessages: olderHistory.length,
     });
 
-    const result = await askGemini({ history: olderHistory, items, requestId });
+    const result = await askGemini({ history: olderHistory, items: resolvedItems, requestId });
     replyMessages = result.messages;
     shouldPause = result.handoff;
     suppressed = result.suppressed;
