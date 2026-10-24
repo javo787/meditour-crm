@@ -9,6 +9,8 @@ import {
   getMessages,
 } from "@/lib/db";
 import { buildDocumentsContext } from "@/lib/dossier";
+import { ensureTranscriptsForLead } from "@/lib/transcription";
+import { buildConversationTranscript } from "@/lib/transcripts";
 import { askCaseAssistant } from "@/lib/gemini";
 import { createLogger, newRequestId } from "@/lib/logger";
 import type { ChatMessage, Lead } from "@/lib/types";
@@ -43,18 +45,6 @@ function buildLeadContext(lead: Lead): string {
 // и MediaAssets в lib/db.ts) — тут только текстовый транскрипт с пометками
 // "(+фото)"/"(+голосовое)", чтобы модель понимала, где именно во времени
 // каждое вложение было отправлено относительно остального текста.
-function buildConversationTranscript(messages: ChatMessage[]): string {
-  if (messages.length === 0) return "";
-  const lines = messages.map((m) => `${m.from === "patient" ? "Patient" : "Meditour"}: ${m.text}`);
-  return (
-    `# WHATSAPP CONVERSATION WITH THE PATIENT SO FAR\n` +
-    `Extract any clinical facts already mentioned here instead of asking the coordinator to retype them. ` +
-    `A "(+фото)"/"(+голосовое)" marker means a photo or voice note was sent at that point — the actual files ` +
-    `are attached separately below/above as images or audio, in the same order they were sent.\n` +
-    lines.join("\n")
-  );
-}
-
 export async function GET(
   _request: Request,
   { params }: { params: { id: string } }
@@ -87,6 +77,8 @@ export async function POST(
   // Сохраняем реплику координатора сразу, до вызова Gemini — она уже
   // валидный факт истории независимо от того, получится ли документ.
   const userMessage = await addCaseAssistantMessage(params.id, "user", parsed.data.text);
+  await ensureTranscriptsForLead(params.id);
+
   const [history, whatsappMessages, allMediaAssets, documents] = await Promise.all([
     getCaseAssistantMessages(params.id),
     getMessages(params.id),
@@ -101,7 +93,13 @@ export async function POST(
   const processedMediaIds = new Set(
     documents.filter((d) => d.status === "done" && d.mediaMessageId).map((d) => d.mediaMessageId as string)
   );
-  const mediaAssets = allMediaAssets.filter((m) => m.kind === "audio" || !processedMediaIds.has(m.messageId));
+
+  // Also filter out audio files that have transcripts, so we don't send both transcript and audio to Gemini
+  const msgsWithTranscript = new Set(whatsappMessages.filter(m => m.transcript).map(m => m.id));
+  const mediaAssets = allMediaAssets.filter((m) =>
+    (m.kind === "audio" && !msgsWithTranscript.has(m.messageId)) ||
+    (m.kind === "image" && !processedMediaIds.has(m.messageId))
+  );
 
   const transcript = buildConversationTranscript(whatsappMessages);
   const documentsContext = buildDocumentsContext(documents);

@@ -54,6 +54,13 @@ export interface Lead {
   noResponse?: boolean;
 }
 
+export interface MessageTranscript {
+  text: string;
+  source: "ai" | "coordinator";
+  model?: string;
+  at: string;
+}
+
 export type MessageSender = "patient" | "ai" | "coordinator";
 
 export interface ChatMessage {
@@ -71,6 +78,7 @@ export interface ChatMessage {
   // отправки). Раньше такие ответы выглядели в переписке как доставленные,
   // и координатор не мог отличить "бот ответил" от "бот молча упал".
   deliveryFailed?: boolean;
+  transcript?: MessageTranscript;
 }
 
 // Отдельный тред координатора с ассистентом подготовки Medical Opinion

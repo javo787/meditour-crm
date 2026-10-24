@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { getLead, getMessages, updateLead } from "@/lib/db";
+import { ensureTranscriptsForLead } from "@/lib/transcription";
+import { buildAnamnesisTranscript } from "@/lib/transcripts";
 import { extractAnamnesis } from "@/lib/gemini";
 import { createLogger, newRequestId } from "@/lib/logger";
 import type { MessageSender } from "@/lib/types";
@@ -7,10 +9,6 @@ import type { MessageSender } from "@/lib/types";
 export const dynamic = "force-dynamic";
 
 const log = createLogger("anamnesis-extract");
-
-function speakerLabel(from: MessageSender): string {
-  return from === "patient" ? "Пациент" : "Meditour";
-}
 
 export async function POST(
   _request: Request,
@@ -24,6 +22,7 @@ export async function POST(
     return NextResponse.json({ error: "Лид не найден" }, { status: 404 });
   }
 
+  await ensureTranscriptsForLead(params.id);
   const messages = await getMessages(params.id);
   if (messages.length === 0) {
     return NextResponse.json(
@@ -32,7 +31,7 @@ export async function POST(
     );
   }
 
-  const transcript = messages.map((m) => `${speakerLabel(m.from)}: ${m.text}`).join("\n");
+  const transcript = buildAnamnesisTranscript(messages);
 
   logger.info("Извлечение анамнеза из переписки", {
     leadId: params.id,
