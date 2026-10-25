@@ -10,6 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { VoiceTranscript } from "./voice-transcript";
 import type { ChatMessage } from "@/lib/types";
 
 export function ChatPanel({
@@ -125,6 +126,13 @@ export function ChatPanel({
                         src={`/api/leads/${leadId}/media/${m.id}`}
                       />
                     )}
+                    <VoiceTranscript
+                      leadId={leadId}
+                      message={m}
+                      onUpdated={(updatedM) => {
+                        setMessages((prev) => prev.map((msg) => msg.id === updatedM.id ? updatedM : msg));
+                      }}
+                    />
                     {!(m.media && hasPlaceholderCaption) && m.text}
                   </div>
                   <span className="flex items-center gap-1 px-1 text-[11px] text-muted-foreground">

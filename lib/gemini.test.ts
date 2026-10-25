@@ -424,3 +424,15 @@ describe("generateWithFallback: keepGenerationConfig", () => {
     expect(calls[1].body.generationConfig).toBeUndefined();
   });
 });
+
+describe("historyText", () => {
+  it("formats history using messageTextForModel for non-coordinator", () => {
+    const { historyText } = require("./gemini");
+    const m = {
+      from: "patient",
+      text: "🎤 [голосовое сообщение] (+голосовое)",
+      transcript: { text: "hello" }
+    };
+    expect(historyText(m)).toContain("🎤 Голосовое сообщение (расшифровка): «hello»");
+  });
+});
