@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { ImageLightbox } from "@/components/leads/patient-card/image-lightbox";
 import {
   crossDocumentWarnings,
   groupDocuments,
@@ -460,6 +461,7 @@ function DocumentRow({
   const [title, setTitle] = useState(doc.title ?? "");
   const [date, setDate] = useState(doc.docDate ?? "");
   const [translation, setTranslation] = useState(doc.translationEn ?? "");
+  const [previewOpen, setPreviewOpen] = useState(false); // фото увеличено на весь экран
 
   // Когда разбор закончился и пришли поля — подтягиваем их в черновики.
   useEffect(() => setTitle(doc.title ?? ""), [doc.title]);
@@ -474,19 +476,31 @@ function DocumentRow({
   return (
     <div className="rounded-md border border-border p-3">
       <div className="flex items-start gap-3">
-        <a
-          href={fileUrl}
-          target="_blank"
-          rel="noreferrer"
-          className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-muted"
-        >
-          {isImage ? (
-            // eslint-disable-next-line @next/next/no-img-element
+        {isImage ? (
+          <button
+            type="button"
+            onClick={() => setPreviewOpen(true)}
+            title="Увеличить"
+            aria-label="Увеличить фото документа"
+            className="flex h-14 w-14 shrink-0 cursor-zoom-in items-center justify-center overflow-hidden rounded-md border border-border bg-muted"
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={fileUrl} alt={doc.filename} className="h-full w-full object-cover" />
-          ) : (
+          </button>
+        ) : (
+          // PDF и фото в формате HEIC браузер в окне не покажет — открываем файл отдельной вкладкой.
+          <a
+            href={fileUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-muted"
+          >
             <FileText className="h-6 w-6 text-muted-foreground" />
-          )}
-        </a>
+          </a>
+        )}
+        {previewOpen && (
+          <ImageLightbox src={fileUrl} alt={doc.title || doc.filename} onClose={() => setPreviewOpen(false)} />
+        )}
         {!isPage && isDoneForSelect(doc) && onToggleSelect && (
           <button
             type="button"
