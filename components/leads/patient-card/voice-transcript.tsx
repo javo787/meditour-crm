@@ -58,7 +58,7 @@ export function VoiceTranscript({ leadId, message, onUpdated }: { leadId: string
   return (
     <div className="mt-1">
       {viewState === "readyToTranscribe" && (
-        <button onClick={handleTranscribe} className="text-[11px] text-muted-foreground hover:underline">
+        <button type="button" onClick={handleTranscribe} className="text-[11px] text-muted-foreground hover:underline">
           расшифровать
         </button>
       )}
@@ -67,11 +67,12 @@ export function VoiceTranscript({ leadId, message, onUpdated }: { leadId: string
       )}
       {viewState === "transcriptionFailed" && (
         <span className="text-[11px] text-destructive flex items-center gap-1">
-          не удалось, <button onClick={handleTranscribe} className="hover:underline">повторить</button>
+          не удалось, <button type="button" onClick={handleTranscribe} className="hover:underline">повторить</button>
         </span>
       )}
       {viewState === "collapsed" && (
         <button
+          type="button"
           onClick={() => setUiState((s) => ({ ...s, isExpanded: true }))}
           aria-expanded={false}
           className="text-[11px] text-muted-foreground hover:underline"
@@ -82,6 +83,7 @@ export function VoiceTranscript({ leadId, message, onUpdated }: { leadId: string
       {viewState === "expanded" && (
         <div>
           <button
+            type="button"
             onClick={() => setUiState((s) => ({ ...s, isExpanded: false }))}
             aria-expanded={true}
             className="text-[11px] text-muted-foreground hover:underline mb-1"
@@ -96,7 +98,7 @@ export function VoiceTranscript({ leadId, message, onUpdated }: { leadId: string
               {message.transcript?.source === "ai" ? "расшифровано ИИ" : "исправлено"}
             </span>
             <span>·</span>
-            <button onClick={startEditing} className="hover:underline">править</button>
+            <button type="button" onClick={startEditing} className="hover:underline">править</button>
           </div>
         </div>
       )}
