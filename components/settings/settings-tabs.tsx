@@ -6,6 +6,7 @@ import { Activity, FlaskConical, HardDrive, Users, type LucideIcon } from "lucid
 import { AiTestPanel } from "@/components/settings/ai-test-panel";
 import { PlatformStatusPanel } from "@/components/settings/platform-status-panel";
 import { StoragePanel } from "@/components/settings/storage-panel";
+import { TelegramPanel } from "@/components/settings/telegram-panel";
 import { TeamPanel } from "@/components/settings/team-panel";
 import { cn } from "@/lib/utils";
 
@@ -20,7 +21,12 @@ const TABS: { id: TabId; label: string; icon: LucideIcon }[] = [
 
 const PANELS: Record<TabId, () => JSX.Element> = {
   team: () => <TeamPanel />,
-  system: () => <PlatformStatusPanel />,
+  system: () => (
+    <div className="flex flex-col gap-5">
+      <PlatformStatusPanel />
+      <TelegramPanel />
+    </div>
+  ),
   storage: () => <StoragePanel />,
   "ai-test": () => <AiTestPanel />,
 };
