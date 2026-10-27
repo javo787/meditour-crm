@@ -1,6 +1,7 @@
 import { addMessage, getMessages, updateLead } from "@/lib/db";
 import { sendWhatsAppText } from "@/lib/evolution";
 import { createLogger } from "@/lib/logger";
+import { notifyCoordinator } from "@/lib/telegram-alerts";
 import type { Lead } from "@/lib/types";
 
 const log = createLogger("follow-up");
@@ -82,6 +83,7 @@ export async function runFollowUpCheck(lead: Lead): Promise<FollowUpResult> {
       "— Автоматическая эскалация: нет ответа 10+ дней после отправки сметы. ИИ поставлен на паузу, нужен координатор. —"
     );
     log.info("эскалация по каденции", { leadId: lead.id, days });
+    void notifyCoordinator("escalation", { id: lead.id, name: lead.name, phone: lead.phone });
     return "escalated";
   }
 

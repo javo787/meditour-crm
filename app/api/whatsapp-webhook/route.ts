@@ -20,6 +20,7 @@ import { askGemini } from "@/lib/gemini";
 import { startTranscription, waitForTranscript, resolveVoiceItems, TRANSCRIPTION_TIMEOUT_MS } from "@/lib/transcription";
 import { interBubblePauseMs, readDelayMs, typingDelayMs } from "@/lib/humanize";
 import { createLogger, newRequestId, Logger } from "@/lib/logger";
+import { notifyCoordinator } from "@/lib/telegram-alerts";
 import { resolveWhatsAppJid } from "@/lib/whatsapp-jid";
 
 export const dynamic = "force-dynamic";
@@ -789,6 +790,9 @@ async function processBatchInner(leadId: string, phone: string, log: Logger, req
     await updateLead(leadId, { aiPaused: true });
     await addMessage(leadId, "ai", "— ИИ автоматически поставлен на паузу —");
     log.info("processBatch: ИИ поставлен на паузу автоматически (handoff)", { leadId });
+    // Координатору — сообщение в Telegram с кнопкой на WhatsApp-чат этого лида. Не ждём и не падаем:
+    // пациент уже получил ответ, а notifyCoordinator сам глушит любые ошибки.
+    void notifyCoordinator("handoff", { id: leadId, name: lead.name, phone: lead.phone || phone });
   }
 }
 
