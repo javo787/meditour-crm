@@ -37,6 +37,12 @@ describe("lib/db", () => {
       const result = await getLead("invalid-id-123");
       expect(result).toBeUndefined();
     });
+
+    it("should return undefined for a valid ID that does not exist", async () => {
+      mockFindOne.mockResolvedValueOnce(null);
+      const result = await getLead(new ObjectId().toString());
+      expect(result).toBeUndefined();
+    });
   });
 
   describe("Voice transcripts", () => {

@@ -62,7 +62,7 @@ describe("transcripts", () => {
       ];
       const res = buildConversationTranscript(messages);
       expect(res).toContain("Patient: hello\n" + "Meditour: hi\n" + "Patient: 🎤 Голосовое сообщение (расшифровка): «world»");
-      expect(res).toContain("voice message transcripts are machine-generated");
+      expect(res).toContain("Voice message transcripts are machine-generated");
     });
 
     it("returns empty string if no messages", () => {
