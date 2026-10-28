@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { formatDistanceToNowStrict, isPast } from "date-fns";
+import { formatDistanceToNowStrict } from "date-fns";
 import { ru } from "date-fns/locale";
 import { User } from "lucide-react";
 
@@ -13,7 +13,7 @@ import { PhoneLink } from "@/components/leads/phone-link";
 import { TagChip } from "@/components/leads/tag-chip";
 import { WaitingBadge } from "@/components/leads/waiting-badge";
 import { getWaitingBadge } from "@/lib/status";
-import { isActiveLead } from "@/lib/touches";
+import { isActiveLead, isTouchOverdue } from "@/lib/touches";
 import { cn } from "@/lib/utils";
 import type { Lead } from "@/lib/types";
 
@@ -26,7 +26,7 @@ export function KanbanCardContent({
   dragging?: boolean;
   onClick?: () => void;
 }) {
-  const overdue = isActiveLead(lead) && isPast(new Date(lead.nextTouch));
+  const overdue = isActiveLead(lead) && isTouchOverdue(lead.nextTouch);
   const initials = lead.name
     .split(" ")
     .map((p) => p[0])

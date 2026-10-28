@@ -3,9 +3,8 @@ import { TrendingUp, AlertCircle, Users, Trophy, Activity } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { Lead, Stage } from "@/lib/types";
-import { isPast } from "date-fns";
 
-import { isActiveLead } from "@/lib/touches";
+import { isActiveLead, isTouchOverdue } from "@/lib/touches";
 
 function StatCard({
   icon: Icon,
@@ -48,7 +47,7 @@ export function KpiBar({ columns }: { columns: Record<Stage, Lead[]> }) {
   const declined = columns.declined.length;
   const inProgress = total - won - declined;
   const overdue = all.filter(
-    (l) => isActiveLead(l) && isPast(new Date(l.nextTouch))
+    (l) => isActiveLead(l) && isTouchOverdue(l.nextTouch)
   ).length;
   const conversion = total > 0 ? Math.round((won / total) * 100) : 0;
 

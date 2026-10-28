@@ -32,6 +32,15 @@ export function touchBucket(nextTouch: string, now: Date = new Date()): TouchBuc
 }
 
 /**
+ * Касание просрочено, только если его календарный день уже прошёл. Раньше экраны сравнивали момент касания
+ * с «сейчас» (isPast): лид создаётся с nextTouch = момент создания, и через секунду он «просрочен», хотя
+ * обратился сегодня. Здесь та же раскладка по дням, что и на доске «Касания».
+ */
+export function isTouchOverdue(nextTouch: string, now: Date = new Date()): boolean {
+  return touchBucket(nextTouch, now) === "overdue";
+}
+
+/**
  * Приоритет внутри группы: сначала те, кому мы должны ответить (пациент
  * написал последним), затем по дате касания, затем по имени.
  */

@@ -1,4 +1,4 @@
-import { endOfDayInZone, groupTouches, isActiveLead, touchBucket } from "./touches";
+import { endOfDayInZone, groupTouches, isActiveLead, isTouchOverdue, touchBucket } from "./touches";
 import type { Lead } from "./types";
 
 function lead(over: Partial<Lead>): Lead {
@@ -86,5 +86,27 @@ describe("endOfDayInZone", () => {
     expect(endOfDayInZone(new Date("2026-10-10T15:00:00Z"), "UTC").toISOString()).toBe(
       "2026-10-10T23:59:59.999Z"
     );
+  });
+});
+
+
+describe("isTouchOverdue", () => {
+  const now = new Date(2026, 9, 27, 15, 0); // 27 октября, 15:00
+
+  it("does not call a lead overdue when it came in earlier today (its touch is the creation moment)", () => {
+    expect(isTouchOverdue(new Date(2026, 9, 27, 9, 30).toISOString(), now)).toBe(false);
+    expect(isTouchOverdue(new Date(2026, 9, 27, 14, 59, 59).toISOString(), now)).toBe(false);
+  });
+
+  it("is overdue only once the calendar day has passed", () => {
+    expect(isTouchOverdue(new Date(2026, 9, 26, 23, 59).toISOString(), now)).toBe(true);
+    expect(isTouchOverdue(new Date(2026, 9, 28, 0, 1).toISOString(), now)).toBe(false);
+  });
+
+  it("agrees with the Касания board buckets", () => {
+    for (const day of [25, 26, 27, 28, 30]) {
+      const iso = new Date(2026, 9, day, 12, 0).toISOString();
+      expect(isTouchOverdue(iso, now)).toBe(touchBucket(iso, now) === "overdue");
+    }
   });
 });

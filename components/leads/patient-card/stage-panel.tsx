@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { format, isPast } from "date-fns";
+import { format } from "date-fns";
 import { ru } from "date-fns/locale";
 import { CalendarDays, UserCog } from "lucide-react";
 
@@ -20,7 +20,7 @@ import { Separator } from "@/components/ui/separator";
 import { toNextTouchIso } from "@/lib/next-touch";
 import { STAGES } from "@/lib/status";
 import { isUnassigned } from "@/lib/team";
-import { isActiveLead } from "@/lib/touches";
+import { isActiveLead, isTouchOverdue } from "@/lib/touches";
 import type { Lead, Stage } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -49,7 +49,7 @@ export function StagePanel({ lead }: { lead: Lead }) {
   const [assigneeNote, setAssigneeNote] = useState<string | null>(null);
   const router = useRouter();
   const nextTouchDate = new Date(nextTouch);
-  const overdue = isActiveLead({ stage, noResponse }) && isPast(nextTouchDate);
+  const overdue = isActiveLead({ stage, noResponse }) && isTouchOverdue(nextTouch);
   const sameYear = nextTouchDate.getFullYear() === new Date().getFullYear();
 
   async function patch(body: Record<string, unknown>) {
