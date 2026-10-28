@@ -52,6 +52,31 @@ export interface Lead {
   // автоматически, когда пациент пишет снова (см. addMessage в lib/db.ts), и
   // когда координатор вручную назначает новую дату касания.
   noResponse?: boolean;
+  // Каденция первых контактов (см. lib/first-contact.ts): состояние цикла и краткая сводка лида от ИИ.
+  firstContact?: FirstContactState;
+  aiBrief?: AiBrief;
+}
+
+// Цикл «бот ответил, пациент молчит»: через 3 часа тишины ИИ пишет сводку (aiBrief) и назначает касание
+// на +2 дня, в срок пишет пациенту, ещё через неделю без ответа лид уходит в «Без ответа».
+export type FirstContactPhase = "scheduled" | "touch1_sent";
+
+export interface FirstContactState {
+  phase: FirstContactPhase;
+  /** Время последнего сообщения пациента («none», если он не писал). Новое сообщение пациента — новый цикл. */
+  cycleKey: string;
+  /** Последнее сообщение бота, от которого считаются 3 часа и 2 дня. */
+  anchorAt: string;
+  /** Когда пора писать пациенту (anchorAt + 2 дня). */
+  touch1DueAt: string;
+  touch1At?: string;
+  /** Неудачные попытки отправки касания (после трёх лид закрывается). */
+  attempts?: number;
+}
+
+export interface AiBrief {
+  text: string;
+  at: string;
 }
 
 export interface MessageTranscript {

@@ -8,6 +8,7 @@ import { CaseAssistantPanel } from "@/components/leads/patient-card/case-assista
 import { ChatPanel } from "@/components/leads/patient-card/chat-panel";
 import { DocumentsPanel } from "@/components/leads/patient-card/documents-panel";
 import { NotesPanel } from "@/components/leads/patient-card/notes-panel";
+import { FirstContactNote } from "@/components/leads/patient-card/first-contact-note";
 import { StagePanel } from "@/components/leads/patient-card/stage-panel";
 import { TagsPanel } from "@/components/leads/patient-card/tags-panel";
 import { PhoneLink } from "@/components/leads/phone-link";
@@ -57,6 +58,7 @@ export default async function LeadDetailPage({ params }: { params: { id: string 
         </div>
         <div className="flex flex-col gap-4">
           <StagePanel lead={lead} />
+          <FirstContactNote lead={lead} />
           <TagsPanel leadId={lead.id} initialTags={lead.tags} />
           <NotesPanel leadId={lead.id} initialNotes={lead.notes} />
           <CaseAssistantPanel leadId={lead.id} initialMessages={caseAssistantMessages} />

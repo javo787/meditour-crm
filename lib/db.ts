@@ -52,6 +52,8 @@ interface LeadDoc {
   lastMessageFrom?: MessageSender;
   lastMessageAt?: string;
   noResponse?: boolean;
+  firstContact?: Lead["firstContact"];
+  aiBrief?: Lead["aiBrief"];
 }
 
 interface MessageDoc {
@@ -151,6 +153,8 @@ function toLead(doc: LeadDoc): Lead {
     lastMessageFrom: doc.lastMessageFrom,
     lastMessageAt: doc.lastMessageAt,
     noResponse: doc.noResponse,
+    firstContact: doc.firstContact,
+    aiBrief: doc.aiBrief,
   };
 }
 
@@ -334,6 +338,83 @@ export async function assignUnassignedLeads(name: string): Promise<number> {
   return res.modifiedCount;
 }
 
+// ───────────────────────── Каденция первых контактов ─────────────────────────
+// Состояние цикла лежит на самом лиде (firstContact), сводка — в aiBrief. Все переходы атомарные
+// (условие на фазу и цикл в фильтре), поэтому двойной запуск не отправит касание дважды.
+
+/** Лиды, которым каденция может быть нужна: ранние стадии, ИИ не на паузе, не «без ответа», последним писал не пациент и не координатор. */
+export async function getFirstContactCandidates(): Promise<Lead[]> {
+  const col = await leadsCollection();
+  const docs = await col
+    .find({
+      stage: { $in: ["new", "first_contact"] },
+      aiPaused: { $ne: true },
+      noResponse: { $ne: true },
+      lastMessageFrom: { $nin: ["patient", "coordinator"] },
+    })
+    .sort({ createdAt: 1 })
+    .toArray();
+  return docs.map(toLead);
+}
+
+/** Сохраняет сводку и назначает касание: nextTouch двигается на дату, когда ИИ напишет пациенту. */
+export async function saveFirstContactSchedule(
+  leadId: string,
+  params: { state: NonNullable<Lead["firstContact"]>; brief: NonNullable<Lead["aiBrief"]>; nextTouch: string }
+): Promise<void> {
+  if (!ObjectId.isValid(leadId)) return;
+  const col = await leadsCollection();
+  await col.updateOne(
+    { _id: new ObjectId(leadId) },
+    { $set: { firstContact: params.state, aiBrief: params.brief, nextTouch: params.nextTouch } }
+  );
+}
+
+/** Занимает касание №1: true, только если оно ещё не отправлено в этом цикле. */
+export async function claimFirstContactTouch1(
+  leadId: string,
+  cycleKey: string,
+  patch: { touch1At: string; nextTouch: string }
+): Promise<boolean> {
+  if (!ObjectId.isValid(leadId)) return false;
+  const col = await leadsCollection();
+  const res = await col.updateOne(
+    { _id: new ObjectId(leadId), "firstContact.phase": "scheduled", "firstContact.cycleKey": cycleKey },
+    {
+      $set: {
+        "firstContact.phase": "touch1_sent",
+        "firstContact.touch1At": patch.touch1At,
+        nextTouch: patch.nextTouch,
+      },
+    }
+  );
+  return res.modifiedCount === 1;
+}
+
+/** Отправка не удалась: касание снова «запланировано», с учётом числа попыток. */
+export async function revertFirstContactTouch1(
+  leadId: string,
+  cycleKey: string,
+  patch: { attempts: number; nextTouch: string }
+): Promise<void> {
+  if (!ObjectId.isValid(leadId)) return;
+  const col = await leadsCollection();
+  await col.updateOne(
+    { _id: new ObjectId(leadId), "firstContact.phase": "touch1_sent", "firstContact.cycleKey": cycleKey },
+    {
+      $set: { "firstContact.phase": "scheduled", "firstContact.attempts": patch.attempts, nextTouch: patch.nextTouch },
+      $unset: { "firstContact.touch1At": "" },
+    }
+  );
+}
+
+/** Цикл закончился без ответа: лид переходит в «Без ответа», состояние цикла снимается (сводка остаётся). */
+export async function closeFirstContact(leadId: string): Promise<void> {
+  if (!ObjectId.isValid(leadId)) return;
+  const col = await leadsCollection();
+  await col.updateOne({ _id: new ObjectId(leadId) }, { $set: { noResponse: true }, $unset: { firstContact: "" } });
+}
+
 export async function updateLead(
   id: string,
   patch: Partial<
@@ -440,6 +521,14 @@ export async function addMessage(
   // сохранено и не теряется — страдает только индикатор в списках.
   try {
     const leadsCol = await leadsCollection();
+    if (from === "patient") {
+      // Каденция первых контактов отодвинула касание на будущее — пациент написал, значит лид нужен сегодня.
+      // Только если цикл шёл: дату, которую координатор поставил вручную, не трогаем.
+      await leadsCol.updateOne(
+        { _id: new ObjectId(leadId), firstContact: { $exists: true }, nextTouch: { $gt: at } },
+        { $set: { nextTouch: at } }
+      );
+    }
     await leadsCol.updateOne(
       { _id: new ObjectId(leadId) },
       {
@@ -450,6 +539,8 @@ export async function addMessage(
           // в «Касания» сам, без ручных действий.
           ...(from === "patient" ? { noResponse: false } : {}),
         },
+        // Новое сообщение пациента обнуляет цикл каденции; сводка aiBrief остаётся.
+        ...(from === "patient" ? { $unset: { firstContact: "" } } : {}),
       }
     );
   } catch (err) {

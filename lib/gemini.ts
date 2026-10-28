@@ -5,6 +5,7 @@ import { MEDITUR_SYSTEM_PROMPT } from "@/lib/playbook";
 import { MEDICAL_OPINION_SYSTEM_PROMPT } from "@/lib/medical-opinion-prompt";
 import { buildDocumentExtractionPrompt } from "@/lib/document-extraction-prompt";
 import { parseExtractionJson, type ExtractedDocument } from "@/lib/documents";
+import { FIRST_CONTACT_MESSAGE_PROMPT, LEAD_BRIEF_PROMPT } from "@/lib/first-contact-prompts";
 import {
   buildPatientSystemPrompt,
   parsePatientReply,
@@ -748,6 +749,39 @@ export async function extractAnamnesis(params: {
     });
     throw new Error("Gemini вернул невалидный JSON при извлечении анамнеза");
   }
+}
+
+// Каденция первых контактов: краткая сводка лида из переписки. Один вызов, когда лид молчит 3 часа;
+// результат сохраняется на лиде (aiBrief) и используется при следующем касании вместо повторного чтения чата.
+export async function summarizeLeadBrief(params: { transcript: string; requestId?: string }): Promise<string> {
+  const logger = params.requestId ? log.child(params.requestId) : log;
+  const contents = [{ role: "user", parts: [{ text: params.transcript }] as GeminiPart[] }];
+  const { text } = await generateWithFallback(contents, LEAD_BRIEF_PROMPT, logger, {
+    generationConfig: { temperature: 0.2, maxOutputTokens: 400 },
+  });
+  const brief = text.trim().replace(/^```\w*\s*/, "").replace(/```\s*$/, "").trim();
+  if (!brief) throw new Error("Gemini вернул пустую сводку лида");
+  return brief.slice(0, 600);
+}
+
+// Каденция первых контактов: текст повторного касания по сводке и последним репликам.
+export async function composeFirstContactMessage(params: {
+  brief?: string;
+  transcript: string;
+  requestId?: string;
+}): Promise<string> {
+  const logger = params.requestId ? log.child(params.requestId) : log;
+  const userText = [
+    params.brief ? `СВОДКА ЛИДА:\n${params.brief}` : "СВОДКИ НЕТ.",
+    "",
+    `ПОСЛЕДНИЕ СООБЩЕНИЯ:\n${params.transcript}`,
+  ].join("\n");
+  const contents = [{ role: "user", parts: [{ text: userText }] as GeminiPart[] }];
+  const { text } = await generateWithFallback(contents, FIRST_CONTACT_MESSAGE_PROMPT, logger, {
+    generationConfig: { temperature: 0.6, maxOutputTokens: 300 },
+  });
+  if (!text.trim()) throw new Error("Gemini вернул пустое сообщение для касания");
+  return text;
 }
 
 // Быстрая проверка "жив ли ИИ" для страницы настроек. Пробует каждую

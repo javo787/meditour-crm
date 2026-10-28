@@ -1,7 +1,11 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   // pdfmake читает шрифты с диска, mammoth разбирает .docx: оба не должны собираться webpack-ом.
-  experimental: { serverComponentsExternalPackages: ["pdfmake", "mammoth"] },
+  experimental: {
+    // instrumentation.ts запускает фоновую каденцию первых контактов (lib/first-contact-scheduler.ts).
+    instrumentationHook: true,
+    serverComponentsExternalPackages: ["pdfmake", "mammoth"],
+  },
   async headers() {
     return [
       {
