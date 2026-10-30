@@ -37,11 +37,44 @@ function cleanStrings<T>(value: T): T {
   return value;
 }
 
+// Пометка для группы цен-альтернатив: без неё читатель плана легко складывает цены клиник.
+export const ALTERNATIVES_NOTE = "Варианты по госпиталям — выбирается один; стоимости не суммируются.";
+const ALTERNATIVES_NOTE_TAIL = "Выбирается один вариант; стоимости не суммируются.";
+const GENERIC_ALTERNATIVES_NOTE = /^варианты по (?:клиникам|госпиталям|больницам)\.?$/i;
+const MAX_NOTE_CHARS = 280;
+
+// Нижняя граница суммы для сортировки: «6 000 – 6 500» → 6000, «80-90 за визит» → 80, «по запросу» → null.
+function lowerBound(amount: string): number | null {
+  const match = amount.match(/\d[\d\s\u00a0\u202f]*(?:[.,]\d+)?/);
+  if (!match) return null;
+  const n = Number(match[0].replace(/[\s\u00a0\u202f]/g, "").replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+}
+
 // Черновик модели, приведённый к печатному виду. Вход не меняется.
 export function sanitizeDraft(draft: PlanDraft): PlanDraft {
   const out = cleanStrings(draft);
   for (const group of out.costs.groups) {
     for (const row of group.rows) row.amount = formatAmount(row.amount);
+
+    // Варианты по разным клиникам: от самой дешёвой (строки без числа — в конец) и с пометкой, что выбирается один.
+    // Порядок задаётся один раз при генерации; после этого координатор волен менять его в редакторе.
+    const clinicIds = new Set(group.rows.map((row) => row.clinicId).filter((id) => id !== ""));
+    if (clinicIds.size >= 2) {
+      group.rows.sort((a, b) => {
+        const x = lowerBound(a.amount);
+        const y = lowerBound(b.amount);
+        if (x === null || y === null) return x === y ? 0 : x === null ? 1 : -1;
+        return x - y;
+      });
+      const note = group.note.trim();
+      if (note === "" || GENERIC_ALTERNATIVES_NOTE.test(note)) {
+        group.note = ALTERNATIVES_NOTE;
+      } else if (!/не\s+суммир/i.test(note)) {
+        const extended = `${note.replace(/[.\s]+$/, "")}. ${ALTERNATIVES_NOTE_TAIL}`;
+        if (extended.length <= MAX_NOTE_CHARS) group.note = extended;
+      }
+    }
   }
   // Пустой или повторяющийся id получает первый свободный c{n}; id у первой клиники с таким значением остаётся.
   // Ссылки clinicId в строках цен не трогаем: висящую поймает проверка price-unknown-clinic.

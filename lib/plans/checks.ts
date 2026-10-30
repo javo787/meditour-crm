@@ -107,6 +107,15 @@ export function treatingDoctorsInLetter(source: string): string[] {
     .filter((name): name is string => name !== undefined);
 }
 
+// Пол пациента по обращению в письме: «Mr. Name» / «Ms. Name». Только обращения с именем — «his attendants» и
+// «Dear Sir/Madam» есть в любом письме шаблона и о поле пациента ничего не говорят.
+export function genderInLetter(source: string): "male" | "female" | undefined {
+  const male = /\bMr\.?\s+[A-Z]/.test(source);
+  const female = /\b(?:Ms|Mrs|Miss)\.?\s+[A-Z]/.test(source);
+  if (male === female) return undefined; // нет обращения или письмо противоречит себе
+  return male ? "male" : "female";
+}
+
 // Все слова имени врача из письма (без «Dr», званий и скобок) есть в тексте поля doctor в плане.
 function doctorMatches(planDoctor: string, letterDoctor: string): boolean {
   const words = letterDoctor
@@ -220,6 +229,20 @@ export function runPlanChecks(input: PlanCheckInput): PlanWarning[] {
       if (missing !== undefined) push("doctor-not-in-letter", "warn", `«${missing}» нет в письме — проверьте по сайту клиники`, `${path}.${field}`);
     }
   }
+  // Пол в плане и обращение в письме («Mr.» / «Ms.»): расхождение чаще всего значит, что модель или координатор
+  // ошиблись по фамилии (Nazarova — мужчина, Mr. в письме).
+  const letterGender = genderInLetter(source);
+  if (letterGender && content.patient.gender !== "unknown" && content.patient.gender !== letterGender) {
+    push(
+      "patient-gender-mismatch",
+      "warn",
+      letterGender === "male"
+        ? "В письме пациент назван «Mr.» (мужчина), а в плане указан женский пол"
+        : "В письме пациент назван «Ms.» (женщина), а в плане указан мужской пол",
+      "patient.gender",
+    );
+  }
+
   // Врачи из письма и врачи в плане: у каждой клиники должен стоять тот врач, чья строка идёт под её описанием.
   // Так ловится «чужой» врач у клиники и пустое поле, когда врач в письме назван.
   for (const { name: letterDoctor, index } of letterDoctorsWithClinic(source, content.clinics)) {

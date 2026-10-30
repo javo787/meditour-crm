@@ -349,7 +349,9 @@ const gTitledItems = (description: string): GeminiSchema =>
     gObj(
       {
         title: gStr(`Short name of the point, in Russian. At most ${MAX.itemTitle} characters.`),
-        text: gStr(`What the point says, in Russian, using only facts from the letter. At most ${MAX.itemText} characters.`),
+        text: gStr(
+          `What the point says, in Russian, using the facts from the letter. When the point is a named operation or procedure, add one or two neutral reference-style sentences saying what it is and why it is done, with no numbers, statistics, claims of effectiveness or promises. At most ${MAX.itemText} characters.`,
+        ),
       },
       "One named point of the section.",
     ),
@@ -375,7 +377,7 @@ export const PLAN_RESPONSE_SCHEMA = gObj({
   profile: gObj(
     {
       specialty: gStr(
-        `Medical specialty of the case as a short Russian noun phrase, for example «Урология». Empty string if the letter does not make it clear. At most ${MAX.profile} characters.`,
+        `Medical specialty of the case as a short Russian noun phrase naming the doctors who will treat it, judged from the specialists and the operation the letter names, for example «Урология» or «Онкохирургия / пластическая и реконструктивная хирургия». Not just the name of the disease. Empty string if the letter does not make it clear. At most ${MAX.profile} characters.`,
       ),
       condition: gStr(
         `The patient's condition in a few Russian words, as the letter names it, for example «камни в почках». Empty string if the letter does not name it. At most ${MAX.profile} characters.`,
@@ -399,7 +401,7 @@ export const PLAN_RESPONSE_SCHEMA = gObj({
     `The diagnosis table, all in Russian. Each field at most ${PLAN_LIMITS.cell} characters; empty string for anything the letter does not state.`,
   ),
   indiaSteps: gArr(
-    gStr(`One step, a short Russian sentence. At most ${MAX.indiaStep} characters.`),
+    gStr(`One step, a short Russian sentence: one examination or action per entry, never several joined in one. At most ${MAX.indiaStep} characters.`),
     `What has to be done in India, in the order of the letter, for example repeat tests on arrival, consultations, the procedure. At most ${MAX.indiaSteps} steps. Empty array if the letter names none.`,
   ),
   tactic: gObj(
@@ -471,7 +473,7 @@ export const PLAN_RESPONSE_SCHEMA = gObj({
           {
             title: gStr(`Heading of the group, in Russian. At most ${MAX.groupTitle} characters.`),
             note: gStr(
-              `A short note in Russian on how to read the group, for example that the variants are alternatives and are not added up; empty string if not needed. At most ${MAX.note} characters.`,
+              `A short note in Russian on how to read the group. For alternatives by hospital write «Варианты по госпиталям — выбирается один; стоимости не суммируются.»; empty string if not needed. At most ${MAX.note} characters.`,
             ),
             rows: gArr(
               gObj(
@@ -489,7 +491,7 @@ export const PLAN_RESPONSE_SCHEMA = gObj({
                 },
                 "One price row of the group.",
               ),
-              `Price rows of the group, at most ${MAX.rows}. When the letter gives alternatives by hospital, write one row per hospital.`,
+              `Price rows of the group, at most ${MAX.rows}. When the letter gives alternatives by hospital, write one row per hospital, ordered from the cheapest to the most expensive by the lower bound of the amount.`,
             ),
           },
           "One group of price rows.",

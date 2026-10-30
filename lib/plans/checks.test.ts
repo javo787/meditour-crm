@@ -1,4 +1,4 @@
-import { hasBlockingWarnings, runPlanChecks, treatingDoctorsInLetter } from "./checks";
+import { genderInLetter, hasBlockingWarnings, runPlanChecks, treatingDoctorsInLetter } from "./checks";
 import type { PlanCheckInput } from "./checks";
 import { newPlanOptions } from "./defaults";
 import type { PlanContent, PlanWarning } from "./schema";
@@ -209,5 +209,36 @@ describe("doctors named in the letter", () => {
   it("stays silent for letters without the treating-doctor phrase", () => {
     expect(codes(runPlanChecks(base()))).not.toContain("clinic-doctor-mismatch");
     expect(codes(runPlanChecks(base()))).not.toContain("letter-doctor-missing");
+  });
+});
+
+
+describe("patient gender against the form of address in the letter", () => {
+  const withLetter = (source: string, gender: "male" | "female" | "unknown") => {
+    const i = base();
+    i.source = source;
+    i.content.patient.gender = gender;
+    return runPlanChecks(i).filter((w) => w.code === "patient-gender-mismatch");
+  };
+
+  it("reads 'Mr.' and 'Ms.' with a name, but not the generic 'his attendants' or 'Sir/Madam'", () => {
+    expect(genderInLetter("Thanks for sharing the report of Mr. Nazarova Sh. The patient and his attendants...")).toBe("male");
+    expect(genderInLetter("Reports of Mrs. Primerova Nodira")).toBe("female");
+    expect(genderInLetter("Dear Sir/Madam, the patient and his attendants will be received at the airport.")).toBeUndefined();
+    expect(genderInLetter("Mr. Anvar and Ms. Nodira")).toBeUndefined(); // противоречит сам себе
+  });
+
+  it("warns when the plan says the opposite of the letter", () => {
+    const w = withLetter("Thanks for sharing the report of Mr. Nazarova Sh. Final line of treatment will follow.", "female");
+    expect(w).toHaveLength(1);
+    expect(w[0]).toMatchObject({ level: "warn", path: "patient.gender" });
+    expect(w[0].message).toContain("мужчина");
+    expect(withLetter("Thanks for sharing the report of Ms. Primerova Nodira.", "male")[0].message).toContain("женщина");
+  });
+
+  it("is quiet when they agree, when the plan gender is unknown, or when the letter does not say", () => {
+    expect(withLetter("Report of Mr. Anvar Sample.", "male")).toEqual([]);
+    expect(withLetter("Report of Mr. Anvar Sample.", "unknown")).toEqual([]);
+    expect(withLetter("Report of the patient Anvar Sample. His attendants are welcome.", "female")).toEqual([]);
   });
 });

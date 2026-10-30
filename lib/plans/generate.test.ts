@@ -1,7 +1,7 @@
 import { generateWithFallback } from "@/lib/gemini";
 import { runPlanChecks } from "./checks";
 import { contentFromDraft, newPlanOptions } from "./defaults";
-import { PlanGenerationError, generatePlanDraft, parseDraftJson, sanitizeDraft } from "./generate";
+import { ALTERNATIVES_NOTE, PlanGenerationError, generatePlanDraft, parseDraftJson, sanitizeDraft } from "./generate";
 import { PLAN_FEWSHOT, PLAN_PROMPT_VERSION, PLAN_SYSTEM_PROMPT, buildPlanUserMessage } from "./prompt";
 import { PLAN_RESPONSE_SCHEMA, planDraftSchema } from "./schema";
 import { prepareSource } from "./source";
@@ -84,14 +84,22 @@ it("the few-shot example is valid, quotes its own letter and passes our own chec
   expect(warnings.filter((w) => w.level === "error")).toEqual([]);
 });
 
-it("the few-shot example is the invented case from the task: nephrology, two clinics, one price range, one letter issue", () => {
+it("the few-shot example is an invented case: nephrology, three clinics, price alternatives sorted from the cheapest, one letter issue", () => {
   const { letter, output } = PLAN_FEWSHOT;
   expect(output.profile.specialty).toBe("Нефрология");
-  expect(output.clinics.map((c) => c.id)).toEqual(["c1", "c2"]);
+  expect(output.clinics.map((c) => c.id)).toEqual(["c1", "c2", "c3"]);
   const rows = output.costs.groups.flatMap((g) => g.rows);
-  expect(rows).toHaveLength(1);
-  expect(rows[0].amount).toMatch(/^\d+-\d+$/);
-  expect(rows[0].clinicId).toBe("c1");
+  expect(rows).toHaveLength(2);
+  for (const row of rows) expect(row.amount).toMatch(/^\d+-\d+$/);
+  // письмо называет сначала более дорогую клинику, в ответе — от самой дешёвой
+  expect(rows.map((r) => r.clinicId)).toEqual(["c3", "c1"]);
+  expect(output.costs.groups[0].note).toBe(ALTERNATIVES_NOTE);
+  // обследования — отдельными строками, последним шагом — решение по результатам
+  expect(output.indiaSteps.length).toBeGreaterThanOrEqual(5);
+  expect(output.indiaSteps[output.indiaSteps.length - 1]).toContain("окончательной тактики");
+  // формальный термин с аббревиатурой и пояснения к пунктам тактики без цифр
+  expect(output.diagnosis.text).toContain("(ХБП)");
+  for (const item of output.tactic.items) expect(item.text).not.toMatch(/\d/);
   expect(output.letterIssues).toHaveLength(1);
   expect(output.letterIssues[0]).toContain("Placeholder Medical Centre");
   // другой пациент и другие клиники, чем в общей фикстуре
@@ -142,7 +150,8 @@ it("returns a sanitized draft with the timing", async () => {
   mockedGenerate.mockResolvedValueOnce(answer(d));
   const r = await generatePlanDraft({ sourceText: source() });
   expect(r.draft.clinics[0].why).not.toMatch(/https?:/);
-  expect(r.draft.costs.groups[0].rows[0].amount).toBe(`6${NB}800`);
+  // Строки-альтернативы идут от самой дешёвой, поэтому клинику c1 ищем по id, а не по номеру строки.
+  expect(r.draft.costs.groups[0].rows.find((row) => row.clinicId === "c1")?.amount).toBe(`6${NB}800`);
   expect(r.ms).toBeGreaterThanOrEqual(0);
 });
 
@@ -268,7 +277,7 @@ it("sanitizeDraft scrubs links, formats amounts and fixes duplicate and empty cl
   expect(out.clinics[0].why).not.toMatch(/https?:/);
   expect(out.clinics.every((c) => c.id !== "")).toBe(true);
   expect(new Set(out.clinics.map((c) => c.id)).size).toBe(out.clinics.length);
-  expect(out.costs.groups[0].rows[0].amount).toBe(`6${NB}800`);
+  expect(out.costs.groups[0].rows.find((row) => row.clinicId === "c1")?.amount).toBe(`6${NB}800`);
 });
 
 it("sanitizeDraft gives a duplicate or empty clinic id the first free c{n} and keeps the first holder of an id", () => {
@@ -296,9 +305,10 @@ it("sanitizeDraft does not rewrite clinicId in price rows: a dangling reference 
   const d = fictionalDraft();
   d.costs.groups[0].rows[0].clinicId = "c9";
   const out = sanitizeDraft(d);
-  expect(out.costs.groups[0].rows.map((r) => r.clinicId)).toEqual(["c9", "c2", "c3"]);
+  // Цены 6400 (c3), 6800 (c9), 7200 (c2): после сортировки висячая ссылка c9 стоит второй.
+  expect(out.costs.groups[0].rows.map((r) => r.clinicId)).toEqual(["c3", "c9", "c2"]);
   const warnings = runPlanChecks({ content: contentFromDraft(out), options: newPlanOptions(), source: source(), senderNames: [] });
-  expect(warnings.find((w) => w.code === "price-unknown-clinic")?.path).toBe("costs.groups[0].rows[0].clinicId");
+  expect(warnings.find((w) => w.code === "price-unknown-clinic")?.path).toBe("costs.groups[0].rows[1].clinicId");
 });
 
 it("sanitizeDraft returns a new draft and leaves its input untouched", () => {
@@ -309,4 +319,87 @@ it("sanitizeDraft returns a new draft and leaves its input untouched", () => {
   const out = sanitizeDraft(d);
   expect(JSON.stringify(d)).toBe(before);
   expect(out).not.toBe(d);
+});
+
+
+// ───────────────────────── улучшения генерации: образец «как у Claude» ─────────────────────────
+
+describe("price alternatives: order and the 'not summed' note", () => {
+  type Row = { label: string; clinicId: string; amount: string; evidence: string };
+  const draftWith = (rows: Array<[string, string]>, note = "") => {
+    const d = fictionalDraft();
+    d.costs.groups = [
+      {
+        title: "Операция",
+        note,
+        rows: rows.map(([clinicId, amount]): Row => ({ label: "Операция", clinicId, amount, evidence: `${clinicId} ${amount}` })),
+      },
+    ];
+    return d;
+  };
+  const ids = (d: ReturnType<typeof sanitizeDraft>) => d.costs.groups[0].rows.map((r) => r.clinicId);
+
+  it("orders hospital alternatives from the cheapest by the lower bound of the range", () => {
+    const out = sanitizeDraft(draftWith([["c1", "6000-6500"], ["c2", "5500-6000"], ["c3", "6400-7000"], ["c4", "5800 - 6200"]]));
+    expect(ids(out)).toEqual(["c2", "c4", "c1", "c3"]);
+  });
+
+  it("puts rows without a number last and keeps equal prices in letter order", () => {
+    const out = sanitizeDraft(draftWith([["c1", "по запросу"], ["c2", "5000"], ["c3", "5000"], ["c4", "4000"]]));
+    expect(ids(out)).toEqual(["c4", "c2", "c3", "c1"]);
+  });
+
+  it("writes the note when it is empty or just 'Варианты по клиникам'", () => {
+    expect(sanitizeDraft(draftWith([["c1", "100"], ["c2", "200"]])).costs.groups[0].note).toBe(ALTERNATIVES_NOTE);
+    expect(sanitizeDraft(draftWith([["c1", "100"], ["c2", "200"]], "Варианты по клиникам.")).costs.groups[0].note).toBe(ALTERNATIVES_NOTE);
+  });
+
+  it("keeps a meaningful note and adds the 'not summed' sentence to it", () => {
+    const out = sanitizeDraft(draftWith([["c1", "100"], ["c2", "200"]], "Варианты по разным клиникам (двухместная палата)"));
+    expect(out.costs.groups[0].note).toBe("Варианты по разным клиникам (двухместная палата). Выбирается один вариант; стоимости не суммируются.");
+  });
+
+  it("does not repeat the sentence when the note already says it, and does not overflow a long note", () => {
+    const has = sanitizeDraft(draftWith([["c1", "100"], ["c2", "200"]], "Выбирается один вариант, цены не суммируются"));
+    expect(has.costs.groups[0].note).toBe("Выбирается один вариант, цены не суммируются");
+    const long = "Очень длинная пометка. ".repeat(12).trim();
+    expect(sanitizeDraft(draftWith([["c1", "100"], ["c2", "200"]], long)).costs.groups[0].note).toBe(long);
+  });
+
+  it("leaves a group of one hospital, or of services without a hospital, as it was", () => {
+    const single = sanitizeDraft(draftWith([["c1", "900"], ["c1", "100"]]));
+    expect(ids(single)).toEqual(["c1", "c1"]);
+    expect(single.costs.groups[0].note).toBe("");
+    const noClinic = sanitizeDraft(draftWith([["", "900"], ["", "100"]]));
+    expect(noClinic.costs.groups[0].rows.map((r) => r.amount)).toEqual(["900", "100"]);
+  });
+});
+
+describe("prompt rules that bring the generated plan closer to the reference plan", () => {
+  it("is a new prompt version", () => {
+    expect(PLAN_PROMPT_VERSION).toBe("2026-10-29.1");
+  });
+
+  it.each([
+    ["formal terms with an abbreviation, not slang", "«базальноклеточный рак кожи (БКРК)»"],
+    ["neutral explanations for named procedures", "Пояснения к операциям и обследованиям"],
+    ["no numbers or promises in the explanations", "Без цифр, сроков, статистики, оценок эффективности"],
+    ["the specialty is the profile of the treating doctors", "профиль врачей, которые будут лечить"],
+    ["one examination per step", "каждое обследование или шаг — отдельная строка"],
+    ["final tactic as the last step", "последним шагом так и напиши"],
+    ["alternatives from the cheapest with the note", "стоимости не суммируются"],
+  ])("says: %s", (_label, phrase) => {
+    expect(PLAN_SYSTEM_PROMPT).toContain(phrase);
+  });
+
+  it("keeps the 'no outside facts' rule and names the single exception", () => {
+    expect(PLAN_SYSTEM_PROMPT).toContain("единственное исключение — нейтральные пояснения из правила 15");
+  });
+
+  it("tells the model the same things in the response schema descriptions", () => {
+    const text = JSON.stringify(PLAN_RESPONSE_SCHEMA);
+    expect(text).toContain("neutral reference-style sentences");
+    expect(text).toContain("one examination or action per entry");
+    expect(text).toContain("ordered from the cheapest to the most expensive");
+  });
 });
